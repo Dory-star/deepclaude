@@ -401,6 +401,23 @@ This prints a `https://claude.ai/code/session_...` URL you can open on your phon
 
 > **⚠️ Claude Code compatibility (important).** Native remote-control with a non-Anthropic backend requires **Claude Code older than 2.1.196**. As of **2.1.196**, Claude Code refuses remote-control whenever `ANTHROPIC_BASE_URL` is not `api.anthropic.com` (error: *"Remote Control is only available when using Claude via api.anthropic.com"*), which blocks **every** backend here — DeepSeek included, not just Kimi/Sol. The screenshots above were captured on a pre-2.1.196 build. Verified 2026-07-21: the block is unconditional on 2.1.198, and the `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` / `CLAUDE_GATEWAY_ALLOW_LOOPBACK` env flags do **not** bypass it (the gate checks `isFirstPartyAnthropicHost`). To use `--remote` with a backend today you must **pin Claude Code to a pre-2.1.196 version**, or drive the backend through a custom relay that doesn't invoke native remote-control. Direct (non-remote) `deepclaude -b ki/-b sol` is unaffected and works on any version.
 
+### Remote access without native remote-control (any Claude Code version)
+
+Since native `--remote` is gated on 2.1.196+, the safe way to drive a Kimi/Sol session from a phone/browser is a **VS Code Tunnel** — a browser URL to a terminal on this machine, where you run `deepclaude` directly. No global env, nothing platform-gated; `ANTHROPIC_BASE_URL` stays scoped to the one launched process.
+
+```powershell
+# 1. On this (home/dev) machine — first run prompts a GitHub/Microsoft login:
+.\scripts\start-vscode-browser-tunnel.ps1 -Name deepclaude-home -SeedServer
+
+# 2. From any phone/laptop browser, open:
+#      https://vscode.dev/tunnel/deepclaude-home
+# 3. In that browser terminal:
+cd C:\Users\User\.cursor\workspaces\deepclaude
+.\deepclaude.ps1 -b ki          # Kimi K3   (or:  -b sol  with the claude-code-proxy bridge up on :18765)
+```
+
+You get a real Kimi/Sol Claude Code session in the browser. It's a terminal-in-browser, not Claude Code's native model-picker UI (that requires native remote-control, which the platform blocks with a custom backend) — but it's fully supported and can't touch your other sessions. See [docs/codex-browser-tunnel.md](docs/codex-browser-tunnel.md) for install-as-a-service and the Cloudflare-protected variant.
+
 ### How it works
 
 Remote control needs Anthropic's bridge for the WebSocket connection, but model calls can go elsewhere. deepclaude starts a local proxy that splits the traffic:
