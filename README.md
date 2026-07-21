@@ -387,15 +387,19 @@ Or on macOS/Linux:
 
 ## Remote control (`--remote`)
 
-Open a Claude Code session in any browser - with DeepSeek as the brain:
+Open a Claude Code session in any browser - with a cheap/alternative backend as the brain:
 
 ```bash
 deepclaude --remote                # Remote control + DeepSeek
 deepclaude --remote -b or          # Remote control + OpenRouter
+deepclaude --remote -b ki          # Remote control + Kimi K3
+deepclaude --remote -b sol         # Remote control + GPT-5.6 Sol (claude-code-proxy bridge on :18765)
 deepclaude --remote -b anthropic   # Remote control + Anthropic (normal)
 ```
 
-This prints a `https://claude.ai/code/session_...` URL you can open on your phone, tablet, or any browser.
+This prints a `https://claude.ai/code/session_...` URL you can open on your phone, tablet, or any browser. The chosen backend shows up as the selectable model in the remote UI (see `screenshots/remote-control-deepseek.png`).
+
+> **⚠️ Claude Code compatibility (important).** Native remote-control with a non-Anthropic backend requires **Claude Code older than 2.1.196**. As of **2.1.196**, Claude Code refuses remote-control whenever `ANTHROPIC_BASE_URL` is not `api.anthropic.com` (error: *"Remote Control is only available when using Claude via api.anthropic.com"*), which blocks **every** backend here — DeepSeek included, not just Kimi/Sol. The screenshots above were captured on a pre-2.1.196 build. Verified 2026-07-21: the block is unconditional on 2.1.198, and the `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` / `CLAUDE_GATEWAY_ALLOW_LOOPBACK` env flags do **not** bypass it (the gate checks `isFirstPartyAnthropicHost`). To use `--remote` with a backend today you must **pin Claude Code to a pre-2.1.196 version**, or drive the backend through a custom relay that doesn't invoke native remote-control. Direct (non-remote) `deepclaude -b ki/-b sol` is unaffected and works on any version.
 
 ### How it works
 
