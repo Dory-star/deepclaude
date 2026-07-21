@@ -20,6 +20,8 @@ Everything works: file reading, editing, bash execution, subagent spawning, auto
 
 ## Quick start (2 minutes)
 
+Need browser-only access from a locked-down laptop? See [Browser-Only Codex Tunnel](docs/codex-browser-tunnel.md) for the VS Code Tunnel path and the optional Cloudflare Tunnel + code-server setup.
+
 ### 1. Get a DeepSeek API key
 
 Sign up at [platform.deepseek.com](https://platform.deepseek.com), add $5 credit, copy your API key.
@@ -78,7 +80,7 @@ Claude Code reads these environment variables to determine where to send API cal
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Same — proxy translates to `deepseek-v4-pro` etc. |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Same — used for subagents |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | Model for spawned subagents |
-| `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `FIREWORKS_API_KEY` | Per-backend keys — proxy substitutes the right one per request |
+| `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `FIREWORKS_API_KEY` / `KIMI_API_KEY` | Per-backend keys — proxy substitutes the right one per request (`sol` needs no key: its local bridge holds its own OAuth) |
 | `ANTHROPIC_API_KEY` | (Optional) Required only for mid-session `/anthropic` switching. Without it the proxy refuses anthropic mode and tells you to relaunch in `-b anthropic`. |
 
 **deepclaude** points Claude Code at the local proxy on `127.0.0.1:3200`. Your client auth (subscription OAuth or `ANTHROPIC_API_KEY`) flows through unchanged — the proxy strips it and substitutes the correct backend key per request, so you never have to set per-backend tokens for Claude Code itself.
@@ -92,6 +94,8 @@ The proxy is launched per-session and shut down on exit. Logs go to `/tmp/proxy.
 | **DeepSeek** (default) | `--backend ds` | $0.44 | $0.87 | China | Auto context caching (120x cheaper on repeat turns) |
 | **OpenRouter** | `--backend or` | $0.44 | $0.87 | US | Cheapest, lowest latency from US/EU |
 | **Fireworks AI** | `--backend fw` | $1.74 | $3.48 | US | Fastest inference |
+| **Kimi K3** | `--backend ki` | $3.00 | $15.00 | Global | 1M context; $0.30/M on cache hits — list price ≈ Anthropic, savings come from the cache-hit discount |
+| **GPT-5.6 Sol** | `--backend sol` | $0 | $0 | local bridge | Uses your ChatGPT subscription via [claude-code-proxy](https://github.com/raine/claude-code-proxy) on `127.0.0.1:18765` |
 | **Anthropic** | `--backend anthropic` | $3.00 | $15.00 | US | Original Claude Opus (for hard problems) |
 
 ### Setup per backend
@@ -113,6 +117,22 @@ export OPENROUTER_API_KEY="sk-or-..."    # macOS/Linux
 setx FIREWORKS_API_KEY "fw_..."          # Windows
 export FIREWORKS_API_KEY="fw_..."        # macOS/Linux
 ```
+
+**Kimi K3** (optional — pay-per-token key from platform.kimi.ai):
+```bash
+setx KIMI_API_KEY "sk-..."               # Windows
+export KIMI_API_KEY="sk-..."             # macOS/Linux
+```
+Uses Moonshot's Anthropic-compatible endpoint (`https://api.moonshot.ai/anthropic`, Bearer auth). Note: low top-up tiers are heavily rate-limited (Tier 0 ≈ 3 requests/min); $10+ cumulative top-up lifts this.
+
+**GPT-5.6 Sol** (optional — no API key; uses your ChatGPT subscription):
+```bash
+# Install and run the bridge once; first run opens the ChatGPT OAuth login:
+#   https://github.com/raine/claude-code-proxy
+# It serves an Anthropic-compatible API on 127.0.0.1:18765.
+deepclaude -b sol      # errors with instructions if the bridge isn't running
+```
+OpenAI has publicly said subscription seats may be used in third-party harnesses, but that stance is not contractual — use at your own judgment. Some ChatGPT Plus accounts have reported Sol being Codex-restricted; if the bridge returns a "not supported with a ChatGPT account" error, that's your plan, not this tool.
 
 **Anthropic** (optional, for mid-session `/anthropic` switching):
 ```bash
@@ -219,12 +239,26 @@ curl -sX POST http://127.0.0.1:3200/_proxy/mode -d "backend=openrouter"
 If successful, say: "Switched to OpenRouter."
 ```
 
-Then type `/deepseek`, `/anthropic`, or `/openrouter` in any Claude Code session to switch instantly.
+**`kimi.md`:**
+```
+Switch the model proxy to Kimi K3. Run this command silently and report the result:
+curl -sX POST $ANTHROPIC_BASE_URL/_proxy/mode -d "backend=kimi"
+If successful, say: "Switched to Kimi K3."
+```
+
+**`sol.md`:**
+```
+Switch the model proxy to GPT-5.6 Sol (local bridge). Run this command silently and report the result:
+curl -sX POST $ANTHROPIC_BASE_URL/_proxy/mode -d "backend=sol"
+If successful, say: "Switched to GPT-5.6 Sol." (The claude-code-proxy bridge must be running.)
+```
+
+Then type `/deepseek`, `/anthropic`, `/openrouter`, `/kimi`, or `/sol` in any Claude Code session to switch instantly.
 
 ### Option 2: CLI flag
 
 ```bash
-deepclaude --switch deepseek    # or: ds, or, fw, anthropic
+deepclaude --switch deepseek    # or: ds, or, fw, ki, sol, anthropic
 deepclaude -s anthropic
 ```
 

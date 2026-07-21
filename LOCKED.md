@@ -8,7 +8,7 @@ Files and code regions in this list are **append-only**. New wiring (additional 
 
 ## How to extend without breaking the lock
 
-- **New backend?** Add a new `processXxxRequest` function and route to it from the dispatch in `startModelProxy`. Do not stuff the new logic into `processDeepseekRequest`.
+- **New backend?** If it needs special per-turn handling (thinking continuity, custom signing — like DeepSeek), add a new `processXxxRequest` function and route to it from the dispatch in `startModelProxy`. A conservative Anthropic-compatible backend may instead ride the generic PATH C (`processOtherBackendRequest` = model remap + strip-ALL-thinking), as openrouter/fireworks/kimi/sol do. Either way: do not stuff new logic into `processDeepseekRequest`.
 - **New Claude model ID?** Add it to `MODEL_REMAP.deepseek` (this is additive — locked logic only forbids modifying existing keys, not adding new ones).
 - **DeepSeek API contract changes?** Stop. Surface the change to the user, get an explicit `unlock proxy/model-proxy.js` (or unlock the specific function), then change with full re-validation against the live VM scenario.
 

@@ -6,6 +6,8 @@
     deepclaude                      # DeepSeek via proxy (default; subscription-friendly)
     deepclaude --backend or         # OpenRouter via proxy
     deepclaude --backend fw         # Fireworks via proxy
+    deepclaude --backend ki         # Kimi K3 via proxy (1M context)
+    deepclaude --backend sol        # GPT-5.6 Sol via local claude-code-proxy bridge
     deepclaude --backend anthropic  # Direct Claude Code (no proxy)
     deepclaude --remote             # Remote control + DeepSeek (browser URL)
     deepclaude --remote -b or       # Remote control + OpenRouter
@@ -36,6 +38,11 @@ if (-not $Backend -and -not $Status -and -not $Cost -and -not $Benchmark -and -n
     $Backend = if ($env:CHEAPCLAUDE_DEFAULT_BACKEND) { $env:CHEAPCLAUDE_DEFAULT_BACKEND } else { "ds" }
 }
 
+# Long-name aliases → canonical $Providers keys. The hashtable lookup is
+# exact, so without this `-b kimi` / `-b deepseek` would hard-fail.
+$AliasMap = @{ kimi = "ki"; deepseek = "ds"; openrouter = "or"; fireworks = "fw" }
+if ($Backend -and $AliasMap[$Backend]) { $Backend = $AliasMap[$Backend] }
+
 # --- Config: resolve all keys from process env or User scope ---
 $DeepSeekKey = if ($env:DEEPSEEK_API_KEY) { $env:DEEPSEEK_API_KEY } else {
     [Environment]::GetEnvironmentVariable("DEEPSEEK_API_KEY", "User")
@@ -46,6 +53,20 @@ $OpenRouterKey = if ($env:OPENROUTER_API_KEY) { $env:OPENROUTER_API_KEY } else {
 $FireworksKey = if ($env:FIREWORKS_API_KEY) { $env:FIREWORKS_API_KEY } else {
     [Environment]::GetEnvironmentVariable("FIREWORKS_API_KEY", "User")
 }
+$KimiKey = if ($env:KIMI_API_KEY) { $env:KIMI_API_KEY } else {
+    [Environment]::GetEnvironmentVariable("KIMI_API_KEY", "User")
+}
+
+# Promote registry-resolved keys into the process env: setx writes only the
+# User hive, and the spawned node proxy inherits ONLY the process env — so a
+# key resolved from the registry would pass the wrapper's own check yet be
+# invisible to the proxy (silent wrong-backend session). ANTHROPIC_API_KEY is
+# deliberately NOT promoted: putting it in process env would flip claude's
+# own auth from subscription OAuth to API-key billing.
+if ($DeepSeekKey)   { $env:DEEPSEEK_API_KEY   = $DeepSeekKey }
+if ($OpenRouterKey) { $env:OPENROUTER_API_KEY = $OpenRouterKey }
+if ($FireworksKey)  { $env:FIREWORKS_API_KEY  = $FireworksKey }
+if ($KimiKey)       { $env:KIMI_API_KEY       = $KimiKey }
 $AnthropicApiKey = if ($env:ANTHROPIC_API_KEY) { $env:ANTHROPIC_API_KEY } else {
     [Environment]::GetEnvironmentVariable("ANTHROPIC_API_KEY", "User")
 }
@@ -71,6 +92,45 @@ $Providers = @{
         key = $FireworksKey; keyName = "FIREWORKS_API_KEY"
         backendId = "fireworks"
         opus = "accounts/fireworks/models/deepseek-v4-pro"; haiku = "accounts/fireworks/models/deepseek-v4-pro"
+    }
+    ki = @{
+        name = "Kimi K3 (via proxy)"
+        url = "https://api.moonshot.ai/anthropic"
+        key = $KimiKey; keyName = "KIMI_API_KEY"
+        backendId = "kimi"
+        bearer = $true
+        opus = "kimi-k3"; haiku = "kimi-k3"
+    }
+    sol = @{
+        name = "GPT-5.6 Sol (ChatGPT-subscription bridge)"
+        url = "http://127.0.0.1:18765"
+        # Keyless: the local claude-code-proxy bridge does its own OAuth.
+        # 'unused' placeholder keeps the legacy proxy spawn args non-empty.
+        key = "unused"; keyName = $null
+        backendId = "sol"
+        bearer = $false
+        requiresKey = $false
+        bridge = $true
+        opus = "gpt-5.6-sol"; haiku = "gpt-5.6-sol"
+    }
+}
+
+# Any HTTP response (even 404) proves a listener on the bridge port;
+# a connection failure with no response means nothing is there.
+function Test-SolBridge {
+    param([string]$Url, [switch]$Quiet)
+    try {
+        $null = Invoke-WebRequest -Uri "$Url/" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        return $true
+    } catch {
+        if ($_.Exception.Response) { return $true }
+        if ($Quiet) { return $false }
+        Write-Host "ERROR: sol bridge not reachable at $Url" -ForegroundColor Red
+        Write-Host "  The 'sol' backend needs claude-code-proxy running locally:" -ForegroundColor Yellow
+        Write-Host "    https://github.com/raine/claude-code-proxy" -ForegroundColor Yellow
+        Write-Host "  Install it, run it (first run opens the ChatGPT OAuth login)," -ForegroundColor Yellow
+        Write-Host "  then retry: deepclaude -b sol" -ForegroundColor Yellow
+        return $false
     }
 }
 
@@ -129,14 +189,22 @@ function Start-ProxyAndDetectPort {
         return $null
     }
 
-    # Switch proxy to chosen backend (legacy startup defaults to anthropic).
+    # Switch proxy to chosen backend (legacy startup defaults to anthropic
+    # unless start-proxy reverse-mapped the target URL to this backend).
+    # A rejected switch means the session is guaranteed to run on the WRONG
+    # backend — abort instead of warning and launching anyway.
     if ($BackendId -and $BackendId -ne "anthropic") {
         try {
             Invoke-WebRequest -Uri "http://127.0.0.1:$proxyPort/_proxy/mode" `
                 -Method POST -Body "backend=$BackendId" `
                 -UseBasicParsing -TimeoutSec 5 | Out-Null
         } catch {
-            Write-Host "  WARN: failed to set initial proxy mode to $BackendId" -ForegroundColor Yellow
+            Write-Host "ERROR: failed to set initial proxy mode to $BackendId - session would run on the wrong backend." -ForegroundColor Red
+            Write-Host "  Check the proxy log: $logFile" -ForegroundColor Yellow
+            if ($proxyProc -and -not $proxyProc.HasExited) {
+                Stop-Process -Id $proxyProc.Id -Force -ErrorAction SilentlyContinue
+            }
+            return $null
         }
     }
 
@@ -151,11 +219,14 @@ if ($Status) {
     Write-Host "    DEEPSEEK_API_KEY:    $(Get-KeyDisplay $DeepSeekKey)"
     Write-Host "    OPENROUTER_API_KEY:  $(Get-KeyDisplay $OpenRouterKey)"
     Write-Host "    FIREWORKS_API_KEY:   $(Get-KeyDisplay $FireworksKey)"
+    Write-Host "    KIMI_API_KEY:        $(Get-KeyDisplay $KimiKey)"
     Write-Host "    ANTHROPIC_API_KEY:   $(Get-KeyDisplay $AnthropicApiKey)  (for /anthropic mid-session)"
     Write-Host "`n  Backends:" -ForegroundColor Yellow
     Write-Host "    deepclaude              # DeepSeek V4 Pro via proxy (default)"
     Write-Host "    deepclaude -b or        # OpenRouter via proxy"
     Write-Host "    deepclaude -b fw        # Fireworks AI via proxy"
+    Write-Host "    deepclaude -b ki        # Kimi K3 via proxy (1M context)"
+    Write-Host "    deepclaude -b sol       # GPT-5.6 Sol (ChatGPT-subscription bridge)"
     Write-Host "    deepclaude -b anthropic # Direct Claude (no proxy)"
     Write-Host ""
     exit 0
@@ -171,6 +242,8 @@ if ($Cost) {
     Write-Host "  DeepSeek        `$0.44      `$0.87      `$0.004" -ForegroundColor Green
     Write-Host "  OpenRouter      `$0.44      `$0.87      (provider)"
     Write-Host "  Fireworks       `$1.74      `$3.48      (provider)"
+    Write-Host "  Kimi K3         `$3.00      `$15.00     `$0.30"
+    Write-Host "  GPT-5.6 Sol     `$0 (ChatGPT subscription bridge)"
     Write-Host "  Anthropic       `$3.00      `$15.00     `$0.30"
     Write-Host ""
     exit 0
@@ -182,23 +255,34 @@ if ($Help) {
     Write-Host ""
     Write-Host "Usage: deepclaude [-b backend] [--remote] [--status] [--cost] [--benchmark]"
     Write-Host ""
-    Write-Host "  -b, --backend   ds (default), or, fw, anthropic"
+    Write-Host "  -b, --backend   ds (default), or, fw, ki, sol, anthropic"
     Write-Host "  -r, --remote    Remote control mode (browser URL)"
     Write-Host ""
+    Write-Host "  KIMI_API_KEY required for ki; sol needs claude-code-proxy running locally."
+    Write-Host ""
     Write-Host "Mid-session switching: set ANTHROPIC_API_KEY in env BEFORE launching"
-    Write-Host "  to enable /anthropic /deepseek /openrouter /fireworks slash commands."
+    Write-Host "  to enable /anthropic /deepseek /openrouter /fireworks /kimi /sol slash commands."
     exit 0
 }
 
 # --- Benchmark ---
 if ($Benchmark) {
     Write-Host "`n  Latency Benchmark" -ForegroundColor Cyan
-    foreach ($id in @("ds","or","fw")) {
+    foreach ($id in @("ds","or","fw","ki","sol")) {
         $p = $Providers[$id]
         Write-Host "  $($p.name)..." -NoNewline
-        if (-not $p.key) { Write-Host " SKIP (no key)" -ForegroundColor DarkGray; continue }
-        $useBearer = $id -in @("or","fw")
-        $headers = if ($useBearer) {
+        if ($p.bridge) {
+            # Keyless bridge: probe reachability instead of the key guard.
+            if (-not (Test-SolBridge -Url $p.url -Quiet)) { Write-Host " SKIP (bridge not running)" -ForegroundColor DarkGray; continue }
+        } elseif (-not $p.key) {
+            Write-Host " SKIP (no key)" -ForegroundColor DarkGray; continue
+        }
+        # Explicit per-provider bearer flag wins; ID-list fallback for the
+        # entries that predate the flag.
+        $useBearer = if ($null -ne $p.bearer) { $p.bearer } else { $id -in @("or","fw") }
+        $headers = if ($p.requiresKey -eq $false) {
+            @{ "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
+        } elseif ($useBearer) {
             @{ "Authorization" = "Bearer $($p.key)"; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
         } else {
             @{ "x-api-key" = $p.key; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
@@ -234,8 +318,9 @@ if ($Remote) {
     }
 
     $p = $Providers[$Backend]
-    if (-not $p) { Write-Host "ERROR: Unknown backend '$Backend'" -ForegroundColor Red; exit 1 }
-    if (-not $p.key) { Write-Host "ERROR: $($p.keyName) not set" -ForegroundColor Red; exit 1 }
+    if (-not $p) { Write-Host "ERROR: Unknown backend '$Backend'. Use: ds, or, fw, ki, sol, anthropic" -ForegroundColor Red; exit 1 }
+    if (-not $p.key -and $p.requiresKey -ne $false) { Write-Host "ERROR: $($p.keyName) not set" -ForegroundColor Red; exit 1 }
+    if ($p.bridge -and -not (Test-SolBridge -Url $p.url)) { exit 1 }
 
     Write-Host "`n  Starting model proxy for $($p.name)..." -ForegroundColor Cyan
     if (-not $AnthropicApiKey) {
@@ -285,8 +370,9 @@ if ($Backend -eq "anthropic") {
 # (subscription OAuth or ANTHROPIC_API_KEY) flow through. The proxy
 # substitutes the backend's API key per request.
 $p = $Providers[$Backend]
-if (-not $p) { Write-Host "ERROR: Unknown backend '$Backend'. Use: ds, or, fw, anthropic" -ForegroundColor Red; exit 1 }
-if (-not $p.key) { Write-Host "ERROR: $($p.keyName) not set" -ForegroundColor Red; exit 1 }
+if (-not $p) { Write-Host "ERROR: Unknown backend '$Backend'. Use: ds, or, fw, ki, sol, anthropic" -ForegroundColor Red; exit 1 }
+if (-not $p.key -and $p.requiresKey -ne $false) { Write-Host "ERROR: $($p.keyName) not set" -ForegroundColor Red; exit 1 }
+if ($p.bridge -and -not (Test-SolBridge -Url $p.url)) { exit 1 }
 
 Write-Host "`n  Starting model proxy for $Backend..." -ForegroundColor Cyan
 if (-not $AnthropicApiKey) {

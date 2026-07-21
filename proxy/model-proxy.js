@@ -1,4 +1,4 @@
-import { createServer } from 'http';
+import { createServer, request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { URL } from 'url';
 import { Transform } from 'stream';
@@ -22,15 +22,39 @@ const MODEL_REMAP = {
         'claude-sonnet-4-5-20250929': 'deepseek/deepseek-v4-flash',
         'claude-haiku-4-5-20251001':  'deepseek/deepseek-v4-flash',
     },
+    kimi: {
+        'claude-opus-4-6':    'kimi-k3',
+        'claude-opus-4-7':    'kimi-k3',
+        'claude-sonnet-4-6':  'kimi-k3',
+        'claude-sonnet-4-5-20250929': 'kimi-k3',
+        'claude-haiku-4-5':   'kimi-k3',
+        'claude-haiku-4-5-20251001':  'kimi-k3',
+    },
+    sol: {
+        'claude-opus-4-6':    'gpt-5.6-sol',
+        'claude-opus-4-7':    'gpt-5.6-sol',
+        'claude-sonnet-4-6':  'gpt-5.6-sol',
+        'claude-sonnet-4-5-20250929': 'gpt-5.6-sol',
+        'claude-haiku-4-5':   'gpt-5.6-sol',
+        'claude-haiku-4-5-20251001':  'gpt-5.6-sol',
+    },
 };
 
 const PRICING_PER_M = {
     deepseek:   { input: 0.44,  output: 0.87,  cacheHit: 0.003625 },
     openrouter: { input: 0.44,  output: 0.87,  cacheHit: 0.003625 },
     fireworks:  { input: 1.74,  output: 3.48 },
-    anthropic:  { input: 3.00,  output: 15.00 },
-    _single:    { input: 0.44,  output: 0.87,  cacheHit: 0.003625 },
+    kimi:       { input: 3.00,  output: 15.00, cacheHit: 0.30 },
+    sol:        { input: 0,     output: 0 },  // ChatGPT-subscription bridge: no marginal cost
+    anthropic:  { input: 3.00,  output: 15.00, cacheHit: 0.30 },
+    _single:    { input: 0.44,  output: 0.87,  cacheHit: 0.003625, inputInclusiveOfCache: true },
 };
+// inputInclusiveOfCache: DeepSeek-style usage reports input_tokens INCLUSIVE
+// of cache reads; Anthropic-style backends (kimi, anthropic itself) report
+// them EXCLUSIVE. The cost math must not subtract cacheRead from an
+// already-exclusive count.
+PRICING_PER_M.deepseek.inputInclusiveOfCache = true;
+PRICING_PER_M.openrouter.inputInclusiveOfCache = true;
 
 /**
  * Transform stream that intercepts SSE events and injects missing `usage`
@@ -186,6 +210,13 @@ function isLikelyAnthropicSignature(sig) {
 function isLikelyDeepseekSignature(sig) {
     return typeof sig === 'string' && sig.length > 0 && sig.length < 80;
 }
+// The sol bridge (claude-code-proxy) prefixes its thinking signatures with
+// 'ccp:' — its own decoder relies on that discriminator. Real Anthropic
+// signatures are base64 and can never start with 'ccp:', so this is a safe
+// foreign-signature marker regardless of length.
+function isLikelySolBridgeSignature(sig) {
+    return typeof sig === 'string' && sig.startsWith('ccp:');
+}
 
 /**
  * Walk parsed.messages[] and filter thinking blocks by a per-block predicate.
@@ -253,7 +284,7 @@ function processAnthropicRequest(body, state, reqId) {
             for (const msg of parsed.messages) {
                 if (!Array.isArray(msg.content)) continue;
                 for (const block of msg.content) {
-                    if (block.type === 'thinking' && isLikelyDeepseekSignature(block.signature)) {
+                    if (block.type === 'thinking' && (isLikelyDeepseekSignature(block.signature) || isLikelySolBridgeSignature(block.signature))) {
                         foreignCount++;
                     }
                 }
@@ -365,6 +396,15 @@ function processOtherBackendRequest(body, state, reqId) {
         const parsed = JSON.parse(body);
         let changed = false;
 
+        // Claude Code tier-suffix markers ([1m], [200k], …) are client-side
+        // context-tier selectors, not real model IDs — no backend accepts
+        // them. Strip before the remap lookup so 1M-tier sessions
+        // (claude-opus-4-7[1m]) remap the same as their base ID.
+        if (parsed.model && /\[\d+[mk]\]$/i.test(parsed.model)) {
+            parsed.model = parsed.model.replace(/\[\d+[mk]\]$/i, '');
+            changed = true;
+        }
+
         const remap = MODEL_REMAP[state.mode];
         if (remap && parsed.model && remap[parsed.model]) {
             const mapped = remap[parsed.model];
@@ -393,7 +433,24 @@ function processOtherBackendRequest(body, state, reqId) {
     }
 }
 
-export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends, defaultMode }) {
+// Strip Claude Code tier-suffix markers ([1m], [200k]) from parsed.model
+// without touching anything else. Used in front of LOCKED PATH B.
+function stripTierSuffix(body, reqId) {
+    try {
+        const parsed = JSON.parse(body);
+        if (parsed.model && /\[\d+[mk]\]$/i.test(parsed.model)) {
+            const original = parsed.model;
+            parsed.model = parsed.model.replace(/\[\d+[mk]\]$/i, '');
+            console.log(`[MODEL-PROXY] #${reqId} stripped tier suffix: ${original} -> ${parsed.model}`);
+            return Buffer.from(JSON.stringify(parsed));
+        }
+    } catch { /* not JSON — leave untouched */ }
+    return body;
+}
+
+// bindHost defaults to loopback-only (local defense-in-depth); only the
+// Cloud Run entry opts into 0.0.0.0.
+export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends, defaultMode, bindHost = '127.0.0.1' }) {
     return new Promise((resolve, reject) => {
         const initialTarget = new URL(targetUrl);
         const initialBearer = targetUrl.includes('openrouter') || targetUrl.includes('fireworks');
@@ -404,12 +461,25 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 allBackends[name] = {
                     target: new URL(cfg.url),
                     apiKey: cfg.apiKey,
-                    useBearer: cfg.url.includes('openrouter') || cfg.url.includes('fireworks'),
+                    // Explicit per-backend auth flag wins; URL-substring match
+                    // kept as fallback for defs that predate the flag.
+                    useBearer: cfg.bearer ?? (cfg.url.includes('openrouter') || cfg.url.includes('fireworks')),
+                    // requiresKey: false marks keyless backends (e.g. a local
+                    // OAuth bridge that does its own auth).
+                    requiresKey: cfg.requiresKey !== false,
                 };
             }
         }
         const initialName = defaultMode || (backends ? 'anthropic' : null);
         const startBackend = initialName && initialName !== 'anthropic' && allBackends[initialName];
+
+        // Boot-time mirror of the switchMode key gate: booting a keyed
+        // backend without its key would forward the CLIENT's auth header
+        // verbatim to that backend (the :apiKey-null passthrough) — fail
+        // fast instead of leaking.
+        if (startBackend && !startBackend.apiKey && startBackend.requiresKey) {
+            return reject(new Error(`API key not set for ${initialName} — cannot boot in mode '${initialName}'. Set its key env var or start without --mode.`));
+        }
 
         // If the proxy boots in anthropic mode AND ANTHROPIC_API_KEY is set in
         // the env, populate apiKey from there so the auth-substitution path
@@ -446,9 +516,13 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 const p = PRICING_PER_M[backend] || PRICING_PER_M._single;
                 const ap = PRICING_PER_M.anthropic;
                 const cacheHitPrice = p.cacheHit || p.input;
-                const cacheMissTokens = tokens.input - (tokens.cacheRead || 0);
+                // See inputInclusiveOfCache note at PRICING_PER_M: only
+                // inclusive-semantics backends subtract cacheRead from input.
+                const cacheMissTokens = p.inputInclusiveOfCache
+                    ? Math.max(0, tokens.input - (tokens.cacheRead || 0))
+                    : tokens.input;
                 const actual = (cacheMissTokens * p.input + (tokens.cacheRead || 0) * cacheHitPrice + tokens.output * p.output) / 1_000_000;
-                const anthropicEq = (tokens.input * ap.input + tokens.output * ap.output) / 1_000_000;
+                const anthropicEq = (cacheMissTokens * ap.input + (tokens.cacheRead || 0) * (ap.cacheHit || ap.input) + tokens.output * ap.output) / 1_000_000;
                 totalActual += actual;
                 totalAnthropic += anthropicEq;
                 summary[backend] = {
@@ -500,7 +574,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
             }
             const b = allBackends[name];
             if (!b) return { error: `Unknown backend: ${name}. Valid: anthropic, ${Object.keys(allBackends).join(', ')}` };
-            if (!b.apiKey) return { error: `API key not set for ${name}` };
+            if (!b.apiKey && b.requiresKey) return { error: `API key not set for ${name}` };
             const prev = state.mode;
             state.mode = name;
             state.target = b.target;
@@ -660,6 +734,20 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 }
             }
 
+            // Keyless backends (requiresKey: false, e.g. the local OAuth
+            // bridge behind mode 'sol'): never forward the client's own auth
+            // headers — in remote mode they carry the user's Anthropic OAuth
+            // token, which must not leak to a third-party bridge process.
+            // Closure lookup, NOT state.* (switchMode doesn't thread it), and
+            // scoped to MODEL_PATHS: non-model traffic still passes through
+            // to api.anthropic.com WITH client auth (see comment above).
+            // anthropic mode is safe: allBackends never has an 'anthropic'
+            // entry, so the lookup is undefined there, never === false.
+            if (MODEL_PATHS.includes(urlPath) && allBackends[state.mode]?.requiresKey === false) {
+                delete headers['authorization'];
+                delete headers['x-api-key'];
+            }
+
             const chunks = [];
             clientReq.on('data', c => chunks.push(c));
             clientReq.on('end', () => {
@@ -689,21 +777,27 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 if (isAnthropicModelCall) {
                     body = processAnthropicRequest(body, state, reqId);
                 } else if (isModelCall && state.mode === 'deepseek') {
-                    body = processDeepseekRequest(body, state, reqId);
+                    // PATH B is LOCKED and predates tier-suffix IDs — strip
+                    // them here so a 1M-tier session switching to /deepseek
+                    // doesn't send 'claude-opus-4-7[1m]' past the remap.
+                    body = processDeepseekRequest(stripTierSuffix(body, reqId), state, reqId);
                 } else if (isModelCall) {
                     body = processOtherBackendRequest(body, state, reqId);
                 }
 
+                // Plain-HTTP targets (the local sol bridge) need the http
+                // module; everything remote stays https. Single choke point.
+                const isHttpTarget = dest.protocol === 'http:';
                 const opts = {
                     hostname: dest.hostname,
-                    port: dest.port || 443,
+                    port: dest.port || (isHttpTarget ? 80 : 443),
                     path: fullPath,
                     method: clientReq.method,
                     headers: { ...headers, 'content-length': body.length },
                     timeout: REQUEST_TIMEOUT_MS,
                 };
 
-                const proxyReq = httpsRequest(opts, (proxyRes) => {
+                const proxyReq = (isHttpTarget ? httpRequest : httpsRequest)(opts, (proxyRes) => {
                     if (isModelCall) {
                         const ttfb = Date.now() - t0;
                         console.log(`[MODEL-PROXY] #${reqId} TTFB ${ttfb}ms (status ${proxyRes.statusCode})`);
@@ -792,9 +886,9 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                     reject(err);
                 }
             });
-            server.listen(port, '127.0.0.1', () => {
+            server.listen(port, bindHost, () => {
                 const actualPort = server.address().port;
-                console.log(`[MODEL-PROXY] Listening on 127.0.0.1:${actualPort} → ${targetUrl} (mode: ${state.mode})`);
+                console.log(`[MODEL-PROXY] Listening on ${bindHost}:${actualPort} → ${targetUrl} (mode: ${state.mode})`);
                 resolve({ port: actualPort, close: () => server.close(), switchMode });
             });
         }

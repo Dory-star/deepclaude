@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deepclaude — Use Claude Code with DeepSeek V4 Pro or other cheap backends
-# Usage: deepclaude [--backend ds|or|fw|anthropic] [--remote] [--status] [--cost] [--benchmark]
+# Usage: deepclaude [--backend ds|or|fw|ki|sol|anthropic] [--remote] [--status] [--cost] [--benchmark]
 
 set -euo pipefail
 
@@ -10,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEEPSEEK_URL="https://api.deepseek.com/anthropic"
 OPENROUTER_URL="https://openrouter.ai/api"
 FIREWORKS_URL="https://api.fireworks.ai/inference"
+KIMI_URL="https://api.moonshot.ai/anthropic"
+SOL_URL="http://127.0.0.1:18765"
 
 BACKEND="${CHEAPCLAUDE_DEFAULT_BACKEND:-ds}"
 ACTION="launch"
@@ -43,6 +45,23 @@ mask_key() {
     if [[ -z "$k" ]]; then echo "MISSING"; else echo "set (****${k: -4})"; fi
 }
 
+check_sol_bridge() {
+    # Any HTTP status (even 404) proves a listener; 000 means nothing there.
+    # NOTE: curl -w prints '000' itself on connection failure AND exits
+    # nonzero — a `|| echo` fallback inside the substitution would append a
+    # second '000' and break the comparison. Fallback must be outside.
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$SOL_URL/" 2>/dev/null) || code="000"
+    if [[ "$code" == "000" ]]; then
+        echo "ERROR: sol bridge not reachable at $SOL_URL" >&2
+        echo "  The 'sol' backend needs claude-code-proxy running locally:" >&2
+        echo "    https://github.com/raine/claude-code-proxy" >&2
+        echo "  Install it, run it (first run opens the ChatGPT OAuth login)," >&2
+        echo "  then retry: deepclaude -b sol" >&2
+        exit 1
+    fi
+}
+
 resolve_backend() {
     local url="" key="" opus="" sonnet="" haiku="" subagent=""
     case "$BACKEND" in
@@ -69,8 +88,24 @@ resolve_backend() {
             haiku="accounts/fireworks/models/deepseek-v4-pro"
             subagent="accounts/fireworks/models/deepseek-v4-pro"
             ;;
+        ki|kimi)
+            key="${KIMI_API_KEY:-}"
+            [[ -z "$key" ]] && { echo "ERROR: KIMI_API_KEY not set" >&2; exit 1; }
+            url="$KIMI_URL"
+            opus="kimi-k3"; sonnet="kimi-k3"
+            haiku="kimi-k3"; subagent="kimi-k3"
+            ;;
+        sol)
+            # ChatGPT-subscription bridge (claude-code-proxy). Keyless: the
+            # bridge holds its own OAuth; the proxy strips inbound auth.
+            check_sol_bridge
+            url="$SOL_URL"
+            key="unused"
+            opus="gpt-5.6-sol"; sonnet="gpt-5.6-sol"
+            haiku="gpt-5.6-sol"; subagent="gpt-5.6-sol"
+            ;;
         anthropic) ;;
-        *) echo "ERROR: Unknown backend '$BACKEND'. Use: ds, or, fw, anthropic" >&2; exit 1 ;;
+        *) echo "ERROR: Unknown backend '$BACKEND'. Use: ds, or, fw, ki, sol, anthropic" >&2; exit 1 ;;
     esac
     RESOLVED_URL="$url"; RESOLVED_KEY="$key"
     RESOLVED_OPUS="$opus"; RESOLVED_SONNET="$sonnet"
@@ -98,11 +133,14 @@ show_status() {
     echo "    DEEPSEEK_API_KEY:    $(mask_key "${DEEPSEEK_API_KEY:-}")"
     echo "    OPENROUTER_API_KEY:  $(mask_key "${OPENROUTER_API_KEY:-}")"
     echo "    FIREWORKS_API_KEY:   $(mask_key "${FIREWORKS_API_KEY:-}")"
+    echo "    KIMI_API_KEY:        $(mask_key "${KIMI_API_KEY:-}")"
     echo ""
     echo "  Backends:"
     echo "    deepclaude                  # DeepSeek V4 Pro (default)"
     echo "    deepclaude -b or            # OpenRouter (cheapest)"
     echo "    deepclaude -b fw            # Fireworks AI (fastest)"
+    echo "    deepclaude -b ki            # Kimi K3 (1M context)"
+    echo "    deepclaude -b sol           # GPT-5.6 Sol (ChatGPT-subscription bridge)"
     echo "    deepclaude -b anthropic     # Normal Claude Code"
     echo "    deepclaude --remote         # Remote control + DeepSeek"
     echo "    deepclaude --remote -b or   # Remote control + OpenRouter"
@@ -128,6 +166,8 @@ show_cost() {
     echo "  DeepSeek        \$0.44      \$0.87      \$0.004"
     echo "  OpenRouter      \$0.44      \$0.87      (provider)"
     echo "  Fireworks       \$1.74      \$3.48      (provider)"
+    echo "  Kimi K3         \$3.00      \$15.00     \$0.30"
+    echo "  GPT-5.6 Sol     \$0 (ChatGPT subscription bridge)"
     echo "  Anthropic       \$3.00      \$15.00     \$0.30"
     echo ""
     echo "  Monthly estimate (heavy use, 25 days): \$30-80"
@@ -140,7 +180,7 @@ show_help() {
     echo "Usage: deepclaude [options] [-- claude-args...]"
     echo ""
     echo "Options:"
-    echo "  -b, --backend <ds|or|fw|anthropic>  Backend (default: ds)"
+    echo "  -b, --backend <ds|or|fw|ki|sol|anthropic>  Backend (default: ds)"
     echo "  -r, --remote                        Remote control mode (browser URL)"
     echo "  --status                             Show keys and backends"
     echo "  --cost                               Pricing comparison"
@@ -152,6 +192,8 @@ show_help() {
     echo "  DEEPSEEK_API_KEY      DeepSeek API key (required for ds)"
     echo "  OPENROUTER_API_KEY    OpenRouter API key (required for or)"
     echo "  FIREWORKS_API_KEY     Fireworks API key (required for fw)"
+    echo "  KIMI_API_KEY          Kimi/Moonshot API key (required for ki)"
+    echo "  (sol needs no key — run claude-code-proxy locally instead)"
     echo "  CHEAPCLAUDE_DEFAULT_BACKEND  Default backend (default: ds)"
 }
 
@@ -161,8 +203,10 @@ do_switch() {
         ds|deepseek)   backend="deepseek" ;;
         or|openrouter) backend="openrouter" ;;
         fw|fireworks)  backend="fireworks" ;;
+        ki|kimi)       backend="kimi" ;;
+        sol)           backend="sol" ;;
         anthropic)     backend="anthropic" ;;
-        *) echo "ERROR: Unknown backend '$backend'. Use: ds, or, fw, anthropic" >&2; exit 1 ;;
+        *) echo "ERROR: Unknown backend '$backend'. Use: ds, or, fw, ki, sol, anthropic" >&2; exit 1 ;;
     esac
     local resp
     resp=$(curl -sX POST http://127.0.0.1:3200/_proxy/mode -d "backend=$backend" 2>/dev/null) || {
@@ -175,17 +219,32 @@ run_benchmark() {
     echo ""
     echo "  Latency Benchmark (1 request each)"
     echo "  ==================================="
-    for name in deepseek openrouter fireworks; do
-        local url="" key="" model=""
+    for name in deepseek openrouter fireworks kimi sol; do
+        local url="" key="" model="" auth="x-api-key"
         case "$name" in
             deepseek)   url="$DEEPSEEK_URL"; key="${DEEPSEEK_API_KEY:-}"; model="deepseek-v4-pro" ;;
             openrouter) url="$OPENROUTER_URL"; key="${OPENROUTER_API_KEY:-}"; model="deepseek/deepseek-v4-pro" ;;
             fireworks)  url="$FIREWORKS_URL"; key="${FIREWORKS_API_KEY:-}"; model="accounts/fireworks/models/deepseek-v4-pro" ;;
+            kimi)       url="$KIMI_URL"; key="${KIMI_API_KEY:-}"; model="kimi-k3"; auth="bearer" ;;
+            sol)        url="$SOL_URL"; key=""; model="gpt-5.6-sol"; auth="none" ;;
         esac
-        if [[ -z "$key" ]]; then echo "  $name: SKIP (no key)"; continue; fi
+        if [[ "$name" == "sol" ]]; then
+            # Keyless bridge: probe reachability instead of the key guard.
+            local probe
+            probe=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$url/" 2>/dev/null) || probe="000"
+            if [[ "$probe" == "000" ]]; then echo "  sol: SKIP (bridge not running)"; continue; fi
+        elif [[ -z "$key" ]]; then
+            echo "  $name: SKIP (no key)"; continue
+        fi
+        local -a auth_args=()
+        case "$auth" in
+            bearer) auth_args=(-H "authorization: Bearer $key") ;;
+            none)   auth_args=() ;;
+            *)      auth_args=(-H "x-api-key: $key") ;;
+        esac
         local start_ms=$(date +%s%3N 2>/dev/null || python3 -c 'import time;print(int(time.time()*1000))')
         local status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$url/v1/messages" \
-            -H "x-api-key: $key" -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
+            ${auth_args[@]+"${auth_args[@]}"} -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
             -d "{\"model\":\"$model\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply: ok\"}]}" \
             --max-time 30 2>/dev/null || echo "timeout")
         local end_ms=$(date +%s%3N 2>/dev/null || python3 -c 'import time;print(int(time.time()*1000))')
@@ -242,10 +301,14 @@ launch_claude() {
     fi
 
     # Switch proxy to chosen backend (legacy startup defaults to anthropic).
+    # Patterns include long aliases: $BACKEND is the raw user string, and a
+    # short-only arm silently skips the switch for `-b deepseek` etc.
     case "$BACKEND" in
-        ds) curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=deepseek" >/dev/null 2>&1 ;;
-        or) curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=openrouter" >/dev/null 2>&1 ;;
-        fw) curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=fireworks" >/dev/null 2>&1 ;;
+        ds|deepseek)   curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=deepseek" >/dev/null 2>&1 ;;
+        or|openrouter) curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=openrouter" >/dev/null 2>&1 ;;
+        fw|fireworks)  curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=fireworks" >/dev/null 2>&1 ;;
+        ki|kimi)       curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=kimi" >/dev/null 2>&1 ;;
+        sol)           curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=sol" >/dev/null 2>&1 ;;
     esac
 
     echo "  Proxy on :$proxy_port -> $RESOLVED_URL ($BACKEND)"
@@ -298,6 +361,21 @@ launch_remote() {
     if [[ -z "$proxy_port" ]]; then
         echo "ERROR: Proxy failed to start (port not detected)" >&2
         exit 1
+    fi
+
+    # Switch proxy to the chosen backend — same as launch_claude. Without
+    # this, --remote sessions silently ride the anthropic-mode boot and
+    # never reach the requested backend.
+    local switch_id=""
+    case "$BACKEND" in
+        ds|deepseek)   switch_id="deepseek" ;;
+        or|openrouter) switch_id="openrouter" ;;
+        fw|fireworks)  switch_id="fireworks" ;;
+        ki|kimi)       switch_id="kimi" ;;
+        sol)           switch_id="sol" ;;
+    esac
+    if [[ -n "$switch_id" ]]; then
+        curl -sX POST "http://127.0.0.1:$proxy_port/_proxy/mode" -d "backend=$switch_id" >/dev/null 2>&1 || true
     fi
 
     echo "  Proxy on :$proxy_port -> $RESOLVED_URL"
