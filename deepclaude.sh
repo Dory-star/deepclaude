@@ -45,6 +45,16 @@ mask_key() {
     if [[ -z "$k" ]]; then echo "MISSING"; else echo "set (****${k: -4})"; fi
 }
 
+resolve_user_env() {
+    # Windows User-scope registry fallback for keys missing from this
+    # shell's env (values written via setx/[Environment]:: never reach
+    # already-running shells). No-op off Windows / without powershell.exe.
+    # Mirrors deepclaude.ps1's User-scope resolution (lockstep).
+    local name="$1"
+    command -v powershell.exe >/dev/null 2>&1 || return 0
+    powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('$name','User')" 2>/dev/null | tr -d '\r' || true
+}
+
 check_sol_bridge() {
     # Any HTTP status (even 404) proves a listener; 000 means nothing there.
     # NOTE: curl -w prints '000' itself on connection failure AND exits
@@ -90,7 +100,11 @@ resolve_backend() {
             ;;
         ki|kimi)
             key="${KIMI_API_KEY:-}"
-            [[ -z "$key" ]] && { echo "ERROR: KIMI_API_KEY not set" >&2; exit 1; }
+            [[ -z "$key" ]] && key="$(resolve_user_env KIMI_API_KEY)"
+            [[ -z "$key" ]] && { echo "ERROR: KIMI_API_KEY not set (env or Windows User scope)" >&2; exit 1; }
+            # export so the spawned proxy's BACKEND_DEFS loader sees it
+            # (it reads process.env, not the argv key)
+            export KIMI_API_KEY="$key"
             url="$KIMI_URL"
             opus="kimi-k3"; sonnet="kimi-k3"
             haiku="kimi-k3"; subagent="kimi-k3"
@@ -225,7 +239,7 @@ run_benchmark() {
             deepseek)   url="$DEEPSEEK_URL"; key="${DEEPSEEK_API_KEY:-}"; model="deepseek-v4-pro" ;;
             openrouter) url="$OPENROUTER_URL"; key="${OPENROUTER_API_KEY:-}"; model="deepseek/deepseek-v4-pro" ;;
             fireworks)  url="$FIREWORKS_URL"; key="${FIREWORKS_API_KEY:-}"; model="accounts/fireworks/models/deepseek-v4-pro" ;;
-            kimi)       url="$KIMI_URL"; key="${KIMI_API_KEY:-}"; model="kimi-k3"; auth="bearer" ;;
+            kimi)       url="$KIMI_URL"; key="${KIMI_API_KEY:-}"; [[ -z "$key" ]] && key="$(resolve_user_env KIMI_API_KEY)"; model="kimi-k3"; auth="bearer" ;;
             sol)        url="$SOL_URL"; key=""; model="gpt-5.6-sol"; auth="none" ;;
         esac
         if [[ "$name" == "sol" ]]; then
