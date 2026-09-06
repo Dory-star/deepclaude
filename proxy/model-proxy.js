@@ -122,7 +122,7 @@ function stripUnsignedThinkingBlocks(body) {
     }
 }
 
-export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends, defaultMode }) {
+export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends, defaultMode, routes }) {
     return new Promise((resolve, reject) => {
         const initialTarget = new URL(targetUrl);
         const initialBearer = targetUrl.includes('openrouter') || targetUrl.includes('fireworks');
@@ -136,6 +136,30 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                     useBearer: cfg.url.includes('openrouter') || cfg.url.includes('fireworks'),
                 };
             }
+        }
+
+        // Dispatch mode (routes): route each request by model prefix instead of
+        // one session-wide backend. `backend` is a name in `backends` or an
+        // inline {url, apiKey} object. Routes whose backend has no API key are
+        // skipped (e.g. no OPENROUTER_API_KEY → only deepseek-v4-* dispatches).
+        const dispatchRoutes = [];
+        if (routes) {
+            for (const r of routes) {
+                // `backend` is a name in `backends` (has parsed `target`) or an
+                // inline {url, apiKey} object.
+                const b = typeof r.backend === 'string' ? allBackends[r.backend] : r.backend;
+                if (!b?.apiKey) continue;
+                const urlStr = b.target?.href || b.url;
+                dispatchRoutes.push({
+                    prefix: r.prefix,
+                    name: typeof r.backend === 'string' ? r.backend : 'route',
+                    target: new URL(urlStr),
+                    apiKey: b.apiKey,
+                    useBearer: /openrouter|fireworks/i.test(urlStr),
+                });
+            }
+            // Longest prefix first so z-ai/glm-5.2 wins over a bare z-ai/ rule.
+            dispatchRoutes.sort((a, b2) => b2.prefix.length - a.prefix.length);
         }
         const initialName = defaultMode || (backends ? 'anthropic' : null);
         const startBackend = initialName && initialName !== 'anthropic' && allBackends[initialName];
@@ -273,53 +297,96 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
             // In anthropic mode, everything passes through transparently
             const isAnthropicMode = state.mode === 'anthropic';
             const isModelCall = !isAnthropicMode && MODEL_PATHS.includes(urlPath);
-            const dest = isModelCall ? state.target : new URL(ANTHROPIC_FALLBACK);
-
-            // Build upstream path. target.pathname may overlap with
-            // clientReq.url (e.g. OpenRouter /api/v1 + /v1/messages).
-            // Strip the shared prefix to avoid /api/v1/v1/messages.
-            let fullPath;
-            if (isModelCall) {
-                const base = state.target.pathname.replace(/\/$/, '');
-                let overlap = '';
-                for (let i = 1; i <= Math.min(base.length, urlPath.length); i++) {
-                    if (base.endsWith(urlPath.substring(0, i))) overlap = urlPath.substring(0, i);
-                }
-                fullPath = overlap ? base + urlPath.substring(overlap.length) : base + urlPath;
-            } else {
-                fullPath = clientReq.url;
-            }
-
-            const reqId = ++reqCount;
-            const t0 = Date.now();
-
-            if (isModelCall) {
-                console.log(`[MODEL-PROXY] #${reqId} → ${dest.hostname}${fullPath}`);
-            }
-
-            const headers = { ...clientReq.headers, host: dest.host };
-            delete headers['content-length'];
-
-            if (isModelCall) {
-                delete headers['authorization'];
-                delete headers['x-api-key'];
-                if (state.useBearer) {
-                    headers['authorization'] = `Bearer ${state.apiKey}`;
-                } else {
-                    headers['x-api-key'] = state.apiKey;
-                }
-            }
+            const dispatchEnabled = isModelCall && dispatchRoutes.length > 0;
 
             const chunks = [];
             clientReq.on('data', c => chunks.push(c));
             clientReq.on('end', () => {
                 let body = Buffer.concat(chunks);
 
+                // Pick the upstream for this request.
+                // Dispatch mode (smart proxy): choose per model name from the
+                // request body — deepseek-v4-* → DeepSeek, z-ai/* & moonshotai/*
+                // → OpenRouter — so one Claude Code session can hop between
+                // providers via /model. Anything the routes don't match falls
+                // back to the session target (deepseek), like a plain ds session.
+                let dest, reqKey, reqBearer, backendName, remapModel;
+                let parsed = null;
+                try { parsed = JSON.parse(body); } catch { /* not JSON */ }
+
+                // Claude Code appends "[1m]" (and similar) to model names of
+                // unknown big-context models; backends only know the bare name,
+                // so strip the suffix and send the cleaned name upstream.
+                if (parsed && typeof parsed.model === 'string' && /\[1m\]$/.test(parsed.model)) {
+                    parsed.model = parsed.model.replace(/\[1m\]$/, '');
+                    body = Buffer.from(JSON.stringify(parsed));
+                }
+
+                if (dispatchEnabled) {
+                    const model = parsed?.model || '';
+                    const route = dispatchRoutes.find(r => model.startsWith(r.prefix));
+                    if (route) {
+                        dest = route.target;
+                        reqKey = route.apiKey;
+                        reqBearer = route.useBearer;
+                        backendName = route.name;
+                    } else {
+                        dest = state.target;
+                        reqKey = state.apiKey;
+                        reqBearer = state.useBearer;
+                        backendName = state.mode;
+                        // Unmatched name (e.g. a stock claude-*): remap it to
+                        // this backend's model, as the ds route would.
+                        remapModel = MODEL_REMAP[state.mode];
+                    }
+                } else {
+                    dest = isModelCall ? state.target : new URL(ANTHROPIC_FALLBACK);
+                    reqKey = state.apiKey;
+                    reqBearer = state.useBearer;
+                    backendName = state.mode;
+                    remapModel = isModelCall ? MODEL_REMAP[state.mode] : null;
+                }
+
+                // Build upstream path. dest.pathname may overlap with
+                // clientReq.url (e.g. OpenRouter /api/v1 + /v1/messages).
+                // Strip the shared prefix to avoid /api/v1/v1/messages.
+                let fullPath;
+                if (isModelCall) {
+                    const base = dest.pathname.replace(/\/$/, '');
+                    let overlap = '';
+                    for (let i = 1; i <= Math.min(base.length, urlPath.length); i++) {
+                        if (base.endsWith(urlPath.substring(0, i))) overlap = urlPath.substring(0, i);
+                    }
+                    fullPath = overlap ? base + urlPath.substring(overlap.length) : base + urlPath;
+                } else {
+                    fullPath = clientReq.url;
+                }
+
+                const reqId = ++reqCount;
+                const t0 = Date.now();
+
+                if (isModelCall) {
+                    const tag = dispatchEnabled ? `dispatch:${backendName}` : backendName;
+                    console.log(`[MODEL-PROXY] #${reqId} (${tag}, model=${parsed?.model || '?'}) → ${dest.hostname}${fullPath}`);
+                }
+
+                const headers = { ...clientReq.headers, host: dest.host };
+                delete headers['content-length'];
+
+                if (isModelCall) {
+                    delete headers['authorization'];
+                    delete headers['x-api-key'];
+                    if (reqBearer) {
+                        headers['authorization'] = `Bearer ${reqKey}`;
+                    } else {
+                        headers['x-api-key'] = reqKey;
+                    }
+                }
+
                 // Remap Anthropic model names to backend-specific names
-                if (isModelCall && MODEL_REMAP[state.mode]) {
+                if (isModelCall && remapModel) {
                     try {
-                        const parsed = JSON.parse(body);
-                        const mapped = MODEL_REMAP[state.mode][parsed.model];
+                        const mapped = remapModel[parsed?.model];
                         if (mapped) {
                             console.log(`[MODEL-PROXY] #${reqId} model remap: ${parsed.model} → ${mapped}`);
                             parsed.model = mapped;
@@ -336,20 +403,20 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 // stripUnsignedThinkingBlocks passes through, causing Anthropic 400s.
                 if (isAnthropicMode && MODEL_PATHS.includes(urlPath)) {
                     try {
-                        const parsed = JSON.parse(body);
+                        const p = JSON.parse(body);
                         if (state.hadNonAnthropicSession) {
-                            stripAllThinkingBlocks(parsed);
+                            stripAllThinkingBlocks(p);
                         } else {
-                            stripUnsignedThinkingBlocks(parsed);
+                            stripUnsignedThinkingBlocks(p);
                         }
-                        body = Buffer.from(JSON.stringify(parsed));
+                        body = Buffer.from(JSON.stringify(p));
                     } catch { /* pass through */ }
                 }
                 if (isModelCall) {
                     try {
-                        const parsed = JSON.parse(body);
-                        stripAllThinkingBlocks(parsed);
-                        body = Buffer.from(JSON.stringify(parsed));
+                        const p = JSON.parse(body);
+                        stripAllThinkingBlocks(p);
+                        body = Buffer.from(JSON.stringify(p));
                     } catch { /* pass through */ }
                 }
 
@@ -373,7 +440,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
 
                     if (isModelCall && isSSE) {
                         clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
-                        const norm = new UsageNormalizer((inp, out) => recordUsage(state.mode, inp, out));
+                        const norm = new UsageNormalizer((inp, out) => recordUsage(backendName, inp, out));
                         proxyRes.pipe(norm).pipe(clientRes);
                         proxyRes.on('end', () => {
                             console.log(`[MODEL-PROXY] #${reqId} done in ${((Date.now() - t0) / 1000).toFixed(1)}s (${norm._inputTokens}in/${norm._outputTokens}out)`);
@@ -386,7 +453,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                             const fixed = normalizeJsonBody(raw);
                             try {
                                 const j = JSON.parse(fixed);
-                                if (j.usage) recordUsage(state.mode, j.usage.input_tokens, j.usage.output_tokens);
+                                if (j.usage) recordUsage(backendName, j.usage.input_tokens, j.usage.output_tokens);
                             } catch {}
                             const outHeaders = { ...proxyRes.headers, 'content-length': fixed.length };
                             clientRes.writeHead(proxyRes.statusCode, outHeaders);

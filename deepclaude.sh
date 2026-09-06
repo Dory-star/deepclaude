@@ -1,17 +1,45 @@
 #!/usr/bin/env bash
 # deepclaude — Use Claude Code with DeepSeek V4 Pro or other cheap backends
-# Usage: deepclaude [--backend ds|or|fw|anthropic] [--remote] [--status] [--cost] [--benchmark]
+# Usage: deepclaude [--backend ds|smart|or|fw|anthropic] [--remote] [--status] [--cost] [--benchmark]
+# Default (smart): one session, 4 models via /model — DeepSeek direct + OpenRouter.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks: deepclaude staat op PATH als symlink in /usr/local/bin,
+# zodat $SCRIPT_DIR naar de echte deepclaude-map wijst (proxy-bestanden).
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    TARGET="$(readlink "$SOURCE")"
+    [[ "$TARGET" != /* ]] && TARGET="$(dirname "$SOURCE")/$TARGET"
+    SOURCE="$TARGET"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+
+# Keys fallback: mist de shell-omgeving een key (bijv. deepclaude gestart
+# vanuit een app of een oude terminal), lees hem dan rechtstreeks uit
+# ~/.zshrc — de enige bron van waarheid voor API-keys.
+load_key() {
+    local name="$1"
+    if [[ -z "${!name:-}" ]]; then
+        local v
+        v=$(grep -E "^export ${name}=" "$HOME/.zshrc" 2>/dev/null | head -1 | sed -E 's/^export [A-Z_]+="(.*)"$/\1/') || true
+        if [[ -n "$v" ]]; then export "$name=$v"; fi
+    fi
+}
+load_key DEEPSEEK_API_KEY
+load_key OPENROUTER_API_KEY
+load_key FIREWORKS_API_KEY
+load_key SUPABASE_ACCESS_TOKEN
+# Zonder deze zag de GitHub-MCP-plugin een lege Bearer-token onder DeepClaude
+# (de plugin gebruikt ${GITHUB_PERSONAL_ACCESS_TOKEN}, geen claude.ai-auth).
+load_key GITHUB_PERSONAL_ACCESS_TOKEN
 
 # --- Config ---
 DEEPSEEK_URL="https://api.deepseek.com/anthropic"
 OPENROUTER_URL="https://openrouter.ai/api"
 FIREWORKS_URL="https://api.fireworks.ai/inference"
 
-BACKEND="${CHEAPCLAUDE_DEFAULT_BACKEND:-ds}"
+BACKEND="${CHEAPCLAUDE_DEFAULT_BACKEND:-smart}"
 ACTION="launch"
 SWITCH_BACKEND=""
 PROXY_PID=""
@@ -24,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --remote|-r)  ACTION="remote"; shift ;;
         --status)     ACTION="status"; shift ;;
         --cost)       ACTION="cost"; shift ;;
+        --keys)       ACTION="keys"; shift ;;
         --benchmark)  ACTION="benchmark"; shift ;;
         --help|-h)    ACTION="help"; shift ;;
         *)            break ;;
@@ -44,21 +73,40 @@ mask_key() {
 }
 
 resolve_backend() {
-    local url="" key="" opus="" sonnet="" haiku="" subagent=""
+    local url="" key="" opus="" sonnet="" haiku="" subagent="" fable=""
     case "$BACKEND" in
+        smart|all)
+            key="${DEEPSEEK_API_KEY:-}"
+            [[ -z "$key" ]] && { echo "ERROR: DEEPSEEK_API_KEY not set" >&2; exit 1; }
+            url="$DEEPSEEK_URL"
+            # One session, 4 rows via /model: flash (default, direct),
+            # pro (direct), GLM 5.2 + Kimi K2.6 via OpenRouter (if key set).
+            opus="deepseek-v4-pro"; sonnet="deepseek-v4-flash"
+            if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+                haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
+            else
+                haiku="deepseek-v4-flash"; fable="deepseek-v4-flash"
+            fi
+            subagent="deepseek-v4-flash"
+            ;;
         ds|deepseek)
             key="${DEEPSEEK_API_KEY:-}"
             [[ -z "$key" ]] && { echo "ERROR: DEEPSEEK_API_KEY not set" >&2; exit 1; }
             url="$DEEPSEEK_URL"
-            opus="deepseek-v4-pro"; sonnet="deepseek-v4-pro"
+            opus="deepseek-v4-pro"; sonnet="deepseek-v4-flash"
             haiku="deepseek-v4-flash"; subagent="deepseek-v4-flash"
+            fable="deepseek-v4-flash"
             ;;
         or|openrouter)
             key="${OPENROUTER_API_KEY:-}"
             [[ -z "$key" ]] && { echo "ERROR: OPENROUTER_API_KEY not set" >&2; exit 1; }
             url="$OPENROUTER_URL"
-            opus="deepseek/deepseek-v4-pro"; sonnet="deepseek/deepseek-v4-pro"
-            haiku="deepseek/deepseek-v4-pro"; subagent="deepseek/deepseek-v4-pro"
+            # or-route: main = GLM 5.2, second = Kimi K2.6 (pick via /model),
+            # subagents = DeepSeek Flash (same model as ds-route),
+            # small/background tasks = GLM 5.3 Flash (cheapest).
+            opus="moonshotai/kimi-k2.6"; sonnet="z-ai/glm-5.2"
+            haiku="z-ai/glm-5.3-flash"; subagent="deepseek/deepseek-v4-flash"
+            fable="z-ai/glm-5.3-flash"
             ;;
         fw|fireworks)
             key="${FIREWORKS_API_KEY:-}"
@@ -68,19 +116,21 @@ resolve_backend() {
             sonnet="accounts/fireworks/models/deepseek-v4-pro"
             haiku="accounts/fireworks/models/deepseek-v4-pro"
             subagent="accounts/fireworks/models/deepseek-v4-pro"
+            fable="accounts/fireworks/models/deepseek-v4-pro"
             ;;
         anthropic) ;;
-        *) echo "ERROR: Unknown backend '$BACKEND'. Use: ds, or, fw, anthropic" >&2; exit 1 ;;
+        *) echo "ERROR: Unknown backend '$BACKEND'. Use: smart, ds, or, fw, anthropic" >&2; exit 1 ;;
     esac
     RESOLVED_URL="$url"; RESOLVED_KEY="$key"
     RESOLVED_OPUS="$opus"; RESOLVED_SONNET="$sonnet"
-    RESOLVED_HAIKU="$haiku"; RESOLVED_SUBAGENT="$subagent"
+    RESOLVED_HAIKU="$haiku"; RESOLVED_SUBAGENT="$subagent"; RESOLVED_FABLE="$fable"
 }
 
 set_model_env() {
     export ANTHROPIC_DEFAULT_OPUS_MODEL="$RESOLVED_OPUS"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="$RESOLVED_SONNET"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$RESOLVED_HAIKU"
+    export ANTHROPIC_DEFAULT_FABLE_MODEL="$RESOLVED_FABLE"
     export CLAUDE_CODE_SUBAGENT_MODEL="$RESOLVED_SUBAGENT"
     export CLAUDE_CODE_EFFORT_LEVEL="max"
 }
@@ -96,8 +146,9 @@ show_status() {
     echo "    FIREWORKS_API_KEY:   $(mask_key "${FIREWORKS_API_KEY:-}")"
     echo ""
     echo "  Backends:"
-    echo "    deepclaude                  # DeepSeek V4 Pro (default)"
-    echo "    deepclaude -b or            # OpenRouter (cheapest)"
+    echo "    deepclaude                  # SMART: 4 modellen — flash (default) | pro | GLM 5.2 | Kimi K2.6 via /model"
+    echo "    deepclaude -b ds            # DeepSeek direct (geen proxy)"
+    echo "    deepclaude -b or            # OpenRouter: GLM 5.2 + Kimi K2.6"
     echo "    deepclaude -b fw            # Fireworks AI (fastest)"
     echo "    deepclaude -b anthropic     # Normal Claude Code"
     echo "    deepclaude --remote         # Remote control + DeepSeek"
@@ -112,6 +163,69 @@ show_status() {
         echo "  Proxy: not running"
     fi
     echo ""
+}
+
+key_masked() {
+    local v="$1"
+    if [[ -z "$v" ]]; then echo "—"; else echo "…${v: -4}"; fi
+}
+
+key_live() {  # echo HTTP-status van een proefaanroep met de key (toont de key nooit)
+    local prov="$1" key="$2" code
+    case "$prov" in
+        deepseek)   code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://api.deepseek.com/user/balance" -H "Authorization: Bearer $key") ;;
+        openrouter) code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://openrouter.ai/api/v1/auth/key" -H "Authorization: Bearer $key") ;;
+        fireworks)  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://api.fireworks.ai/inference/v1/models" -H "Authorization: Bearer $key") ;;
+        *) code="?" ;;
+    esac
+    echo "$code"
+}
+
+show_keys() {
+    echo ""
+    echo "  API-key diagnose"
+    echo "  ================="
+    echo "  Bron: ~/.zshrc (regels 'export *_API_KEY=\"...\"')"
+    echo "  Toont nooit de volledige key — alleen of alles klopt."
+    echo ""
+    for entry in "DEEPSEEK_API_KEY|deepseek" "OPENROUTER_API_KEY|openrouter" "FIREWORKS_API_KEY|fireworks"; do
+        local name="${entry%%|*}" prov="${entry##*|}"
+        local zshrc_val shell_val
+        zshrc_val=$(grep -E "^export ${name}=" "$HOME/.zshrc" 2>/dev/null | head -1 | sed -E 's/^export [A-Z_]+="(.*)"$/\1/') || true
+        shell_val="${!name:-}"
+
+        local waar staat live
+        if [[ -n "$zshrc_val" ]]; then
+            waar=".zshrc: $(key_masked "$zshrc_val")"
+        else
+            waar=".zshrc: NIET aanwezig"
+        fi
+        if [[ -n "$shell_val" && -n "$zshrc_val" && "$shell_val" == "$zshrc_val" ]]; then
+            staat="OK"
+        elif [[ -n "$shell_val" && -n "$zshrc_val" ]]; then
+            staat="VERSCHIL (shell $(key_masked "$shell_val")) — open nieuwe terminal of: source ~/.zshrc"
+        elif [[ -n "$zshrc_val" ]]; then
+            staat="niet in deze shell geladen (deepclaude laadt hem zelf)"
+        else
+            staat="niet gevonden"
+        fi
+
+        local testkey="${shell_val:-$zshrc_val}"
+        if [[ -n "$testkey" ]]; then
+            local code
+            code=$(key_live "$prov" "$testkey")
+            if [[ "$code" == "200" ]]; then live="werkt (proefaanroep OK)"
+            elif [[ "$code" == "401" || "$code" == "403" ]]; then live="GEWEIGERD (code $code) — key ongeldig of ingetrokken"
+            else live="onbereikbaar (code $code) — internet/proxy?"; fi
+        else
+            live="geen key om te testen"
+        fi
+
+        printf "  %-22s %s\n" "$name" "$staat"
+        printf "  %-22s %s\n" "" "bestand: $waar"
+        printf "  %-22s %s\n" "" "live:    $live"
+        echo ""
+    done
 }
 
 show_cost() {
@@ -136,19 +250,29 @@ show_help() {
     echo "Usage: deepclaude [options] [-- claude-args...]"
     echo ""
     echo "Options:"
-    echo "  -b, --backend <ds|or|fw|anthropic>  Backend (default: ds)"
+    echo "  -b, --backend <smart|ds|or|fw|anthropic>  Backend (default: smart)"
     echo "  -r, --remote                        Remote control mode (browser URL)"
     echo "  --status                             Show keys and backends"
+    echo "  --keys                               Key diagnose (waar staat welke key, werkt hij?)"
     echo "  --cost                               Pricing comparison"
     echo "  --benchmark                          Latency test"
     echo "  -s, --switch <backend>               Switch proxy mid-session"
     echo "  -h, --help                           This help"
     echo ""
+    echo "Backends:"
+    echo "  smart     One session, 4 models via /model (default): deepseek-v4-flash"
+    echo "            (default) | deepseek-v4-pro | z-ai/glm-5.2 | moonshotai/kimi-k2.6"
+    echo "            DeepSeek calls stay direct; GLM/Kimi go via OpenRouter."
+    echo "  ds        DeepSeek direct (single backend, no proxy)"
+    echo "  or        OpenRouter: GLM 5.2 main + Kimi K2.6"
+    echo "  fw        Fireworks AI (fastest)"
+    echo "  anthropic Normal Claude Code"
+    echo ""
     echo "Environment variables:"
-    echo "  DEEPSEEK_API_KEY      DeepSeek API key (required for ds)"
-    echo "  OPENROUTER_API_KEY    OpenRouter API key (required for or)"
+    echo "  DEEPSEEK_API_KEY      DeepSeek API key (required for ds/smart)"
+    echo "  OPENROUTER_API_KEY    OpenRouter API key (required for or; enables GLM/Kimi rows in smart)"
     echo "  FIREWORKS_API_KEY     Fireworks API key (required for fw)"
-    echo "  CHEAPCLAUDE_DEFAULT_BACKEND  Default backend (default: ds)"
+    echo "  CHEAPCLAUDE_DEFAULT_BACKEND  Default backend (default: smart)"
 }
 
 do_switch() {
@@ -209,7 +333,7 @@ launch_claude() {
 
     echo "  Launching Claude Code via $BACKEND..."
     echo "  Endpoint: $RESOLVED_URL"
-    echo "  Model: $RESOLVED_OPUS (main) + $RESOLVED_HAIKU (subagents)"
+    echo "  Model: $RESOLVED_SONNET (main) | via /model: $RESOLVED_OPUS | subagents: $RESOLVED_SUBAGENT"
     echo ""
 
     export ANTHROPIC_BASE_URL="$RESOLVED_URL"
@@ -266,13 +390,67 @@ launch_remote() {
     claude remote-control "$@"
 }
 
+launch_smart() {
+    resolve_backend   # 'smart' rows: flash default, pro, GLM/Kimi via /model
+
+    echo "  Launching Claude Code via smart proxy (4 models)..."
+    echo "  /model: $RESOLVED_SONNET (default) | $RESOLVED_OPUS | $RESOLVED_HAIKU | $RESOLVED_FABLE"
+    echo "  subagents: $RESOLVED_SUBAGENT"
+    if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+        echo "  NOTE: OPENROUTER_API_KEY not set — GLM/Kimi rows disabled (ds only)"
+    fi
+    echo ""
+
+    # Dispatch proxy: routes each /v1/messages by model name —
+    # deepseek-v4-* → DeepSeek direct, z-ai/* & moonshotai/* → OpenRouter.
+    # Ruim een eventuele oude dispatch-proxy op (kan blijven hangen na een crash).
+    pkill -f "start-proxy.js --dispatch" 2>/dev/null || true
+
+    local port_file
+    port_file=$(mktemp)
+    node "$SCRIPT_DIR/proxy/start-proxy.js" --dispatch --port-file "$port_file" >> /tmp/deepclaude-proxy.log 2>&1 &
+    PROXY_PID=$!
+
+    local tries=0
+    while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
+        sleep 0.2
+        tries=$((tries + 1))
+    done
+
+    if [[ ! -s "$port_file" ]]; then
+        echo "ERROR: Proxy failed to start (log: /tmp/deepclaude-proxy.log)" >&2
+        rm -f "$port_file"
+        exit 1
+    fi
+
+    local proxy_port
+    proxy_port=$(head -1 "$port_file")
+    rm -f "$port_file"
+
+    echo "  Proxy on :$proxy_port (per-model dispatch)"
+    echo ""
+
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
+    export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+    set_model_env
+    unset ANTHROPIC_API_KEY
+
+    # No exec: the EXIT trap stops the proxy when this session ends.
+    claude "$@"
+}
+
 # --- Main ---
 case "$ACTION" in
     status)    show_status ;;
+    keys)      show_keys ;;
     cost)      show_cost ;;
     benchmark) run_benchmark ;;
     help)      show_help ;;
     switch)    do_switch ;;
-    remote)    launch_remote "$@" ;;
-    launch)    launch_claude "$@" ;;
+    remote)    [[ "$BACKEND" == "smart" || "$BACKEND" == "all" ]] && BACKEND="ds"; launch_remote "$@" ;;
+    launch)    if [[ "$BACKEND" == "smart" || "$BACKEND" == "all" ]]; then
+                   launch_smart "$@"
+               else
+                   launch_claude "$@"
+               fi ;;
 esac
