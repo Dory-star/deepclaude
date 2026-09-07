@@ -403,31 +403,44 @@ launch_smart() {
 
     # Dispatch proxy: routes each /v1/messages by model name —
     # deepseek-v4-* → DeepSeek direct, z-ai/* & moonshotai/* → OpenRouter.
-    # Ruim een eventuele oude dispatch-proxy op (kan blijven hangen na een crash).
-    pkill -f "start-proxy.js --dispatch" 2>/dev/null || true
+    # Dit is een GEDEELDE proxy op een vast poortnummer: meerdere deepclaude
+    # smart-sessies (verschillende terminals/projecten) draaien er tegelijk
+    # tegenaan. Daarom nooit blind killen+herstarten hier — dat trekt de
+    # proxy onder elke andere lopende sessie vandaan. Eerst checken of er al
+    # een gezonde proxy luistert en die dan hergebruiken.
+    local proxy_port=3200
+    local proxy_status
+    proxy_status=$(curl -s --max-time 1 "http://127.0.0.1:${proxy_port}/_proxy/status" 2>/dev/null) || proxy_status=""
 
-    local port_file
-    port_file=$(mktemp)
-    node "$SCRIPT_DIR/proxy/start-proxy.js" --dispatch --port-file "$port_file" >> /tmp/deepclaude-proxy.log 2>&1 &
-    PROXY_PID=$!
+    if [[ -n "$proxy_status" ]]; then
+        echo "  Proxy on :$proxy_port (per-model dispatch) — hergebruikt, al actief"
+    else
+        # Geen (gezonde) proxy gevonden: ruim een eventuele hangende/dode
+        # instantie op en start een nieuwe.
+        pkill -f "start-proxy.js --dispatch" 2>/dev/null || true
 
-    local tries=0
-    while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
-        sleep 0.2
-        tries=$((tries + 1))
-    done
+        local port_file
+        port_file=$(mktemp)
+        node "$SCRIPT_DIR/proxy/start-proxy.js" --dispatch --port-file "$port_file" >> /tmp/deepclaude-proxy.log 2>&1 &
+        disown
 
-    if [[ ! -s "$port_file" ]]; then
-        echo "ERROR: Proxy failed to start (log: /tmp/deepclaude-proxy.log)" >&2
+        local tries=0
+        while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
+            sleep 0.2
+            tries=$((tries + 1))
+        done
+
+        if [[ ! -s "$port_file" ]]; then
+            echo "ERROR: Proxy failed to start (log: /tmp/deepclaude-proxy.log)" >&2
+            rm -f "$port_file"
+            exit 1
+        fi
+
+        proxy_port=$(head -1 "$port_file")
         rm -f "$port_file"
-        exit 1
+
+        echo "  Proxy on :$proxy_port (per-model dispatch) — nieuw gestart"
     fi
-
-    local proxy_port
-    proxy_port=$(head -1 "$port_file")
-    rm -f "$port_file"
-
-    echo "  Proxy on :$proxy_port (per-model dispatch)"
     echo ""
 
     export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
@@ -435,7 +448,10 @@ launch_smart() {
     set_model_env
     unset ANTHROPIC_API_KEY
 
-    # No exec: the EXIT trap stops the proxy when this session ends.
+    # Geen PROXY_PID gezet: de EXIT trap stopt deze gedeelde proxy bewust
+    # NIET meer bij het afsluiten van één sessie — andere sessies kunnen 'm
+    # nog gebruiken. Herstart handmatig via dc() of:
+    #   pkill -f "start-proxy.js --dispatch"
     claude "$@"
 }
 
