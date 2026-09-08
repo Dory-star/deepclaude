@@ -79,15 +79,20 @@ resolve_backend() {
             key="${DEEPSEEK_API_KEY:-}"
             [[ -z "$key" ]] && { echo "ERROR: DEEPSEEK_API_KEY not set" >&2; exit 1; }
             url="$DEEPSEEK_URL"
-            # One session, 4 rows via /model: flash (default, direct),
-            # pro (direct), GLM 5.2 + Kimi K2.6 via OpenRouter (if key set).
-            opus="deepseek-v4-pro"; sonnet="deepseek-v4-flash"
+            # 'smart'-slots = de rijen in /model (volledige uitleg: MODELS.md).
+            #   Default-rij draait deepseek-v4-flash[1m] — ingesteld via
+            #   ANTHROPIC_MODEL in launch_smart, los van deze slots.
+            #   Opus = pro; Sonnet = 4.1-flash-exp (bèta, vervalt 2026-09-10 —
+            #   dan terug naar deepseek-v4-flash); Fable = Kimi; Haiku = GLM.
+            #   Subagents draaien de stabiele flash (de EXP heeft een
+            #   20-requests-concurrencylimiet per account).
+            opus="deepseek-v4-pro"; sonnet="deepseek-v4.1-flash-expires-on-0910"
             if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
                 haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
             else
                 haiku="deepseek-v4-flash"; fable="deepseek-v4-flash"
             fi
-            subagent="deepseek-v4-flash"
+            subagent="deepseek-v4-flash"   # stabiele flash voor subagenten (20-concurrency-limiet EXP)
             ;;
         ds|deepseek)
             key="${DEEPSEEK_API_KEY:-}"
@@ -127,12 +132,32 @@ resolve_backend() {
 }
 
 set_model_env() {
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="$RESOLVED_OPUS"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="$RESOLVED_SONNET"
+    # $1 = model dat de Default-rij moet draaien (ANTHROPIC_MODEL), of "" voor
+    # geen override (ds/or/fw: dan geldt gewoon de sonnet-slot).
+    # DeepSeek-slots krijgen het "[1m]"-suffix: Claude Code gelooft dan een
+    # 1M-context (geen auto-compact op 200k) en stuurt de bèta-header
+    # context-1m-2025-08-07 mee; de dispatch-proxy en de CLI zelf strippen het
+    # suffix vóór de wire. GLM/Kimi (128-256k) krijgen GEEN suffix.
+    # Zet hier GEEN CLAUDE_CODE_MAX_CONTEXT_TOKENS: dat werkt alleen samen met
+    # DISABLE_COMPACT én zou GLM/Kimi (verkeerd) óók raken.
+    local m
+    m="$RESOLVED_OPUS"
+    if [[ "$m" == deepseek-* || "$m" == deepseek/deepseek-* ]]; then m="${m}[1m]"; fi
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$m"
+    m="$RESOLVED_SONNET"
+    if [[ "$m" == deepseek-* || "$m" == deepseek/deepseek-* ]]; then m="${m}[1m]"; fi
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$m"
+    m="$RESOLVED_SUBAGENT"
+    if [[ "$m" == deepseek-* || "$m" == deepseek/deepseek-* ]]; then m="${m}[1m]"; fi
+    export CLAUDE_CODE_SUBAGENT_MODEL="$m"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$RESOLVED_HAIKU"
     export ANTHROPIC_DEFAULT_FABLE_MODEL="$RESOLVED_FABLE"
-    export CLAUDE_CODE_SUBAGENT_MODEL="$RESOLVED_SUBAGENT"
     export CLAUDE_CODE_EFFORT_LEVEL="max"
+    if [[ -n "${1:-}" ]]; then
+        export ANTHROPIC_MODEL="$1"
+    else
+        unset ANTHROPIC_MODEL
+    fi
 }
 
 show_status() {
@@ -146,7 +171,7 @@ show_status() {
     echo "    FIREWORKS_API_KEY:   $(mask_key "${FIREWORKS_API_KEY:-}")"
     echo ""
     echo "  Backends:"
-    echo "    deepclaude                  # SMART: 4 modellen — flash (default) | pro | GLM 5.2 | Kimi K2.6 via /model"
+    echo "    deepclaude                  # SMART: Default=flash, Opus=pro, Sonnet=4.1-exp, Fable=Kimi, Haiku=GLM (zie MODELS.md)"
     echo "    deepclaude -b ds            # DeepSeek direct (geen proxy)"
     echo "    deepclaude -b or            # OpenRouter: GLM 5.2 + Kimi K2.6"
     echo "    deepclaude -b fw            # Fireworks AI (fastest)"
@@ -260,8 +285,10 @@ show_help() {
     echo "  -h, --help                           This help"
     echo ""
     echo "Backends:"
-    echo "  smart     One session, 4 models via /model (default): deepseek-v4-flash"
-    echo "            (default) | deepseek-v4-pro | z-ai/glm-5.2 | moonshotai/kimi-k2.6"
+    echo "  smart     One session, 5 rijen via /model (default): Default-rij draait"
+    echo "            deepseek-v4-flash[1m]; Opus=deepseek-v4-pro[1m];"
+    echo "            Sonnet=deepseek-v4.1-flash-expires-on-0910[1m] (bèta t/m 2026-09-10);"
+    echo "            Fable=moonshotai/kimi-k2.6; Haiku=z-ai/glm-5.2 (zie MODELS.md)"
     echo "            DeepSeek calls stay direct; GLM/Kimi go via OpenRouter."
     echo "  ds        DeepSeek direct (single backend, no proxy)"
     echo "  or        OpenRouter: GLM 5.2 main + Kimi K2.6"
@@ -338,7 +365,7 @@ launch_claude() {
 
     export ANTHROPIC_BASE_URL="$RESOLVED_URL"
     export ANTHROPIC_AUTH_TOKEN="$RESOLVED_KEY"
-    set_model_env
+    set_model_env ""   # geen ANTHROPIC_MODEL-override: sonnet-slot is de default
     unset ANTHROPIC_API_KEY
 
     exec claude "$@"
@@ -384,17 +411,18 @@ launch_remote() {
     echo ""
 
     export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
-    set_model_env
+    set_model_env ""   # geen ANTHROPIC_MODEL-override: sonnet-slot is de default
     unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 
     claude remote-control "$@"
 }
 
 launch_smart() {
-    resolve_backend   # 'smart' rows: flash default, pro, GLM/Kimi via /model
+    resolve_backend   # 'smart' slots: Default=flash, Opus=pro, Sonnet=4.1-exp, Fable=Kimi, Haiku=GLM
 
-    echo "  Launching Claude Code via smart proxy (4 models)..."
-    echo "  /model: $RESOLVED_SONNET (default) | $RESOLVED_OPUS | $RESOLVED_HAIKU | $RESOLVED_FABLE"
+    echo "  Launching Claude Code via smart proxy (5 /model-rijen)..."
+    echo "  Default-rij: deepseek-v4-flash[1m] (via ANTHROPIC_MODEL, zie MODELS.md)"
+    echo "  /model-slots: $RESOLVED_SONNET | $RESOLVED_OPUS | $RESOLVED_HAIKU | $RESOLVED_FABLE"
     echo "  subagents: $RESOLVED_SUBAGENT"
     if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
         echo "  NOTE: OPENROUTER_API_KEY not set — GLM/Kimi rows disabled (ds only)"
@@ -445,7 +473,10 @@ launch_smart() {
 
     export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
     export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
-    set_model_env
+    # Default-rij = gewone flash (1M-context), los van de Sonnet-slot (4.1-exp).
+    # ANTHROPIC_MODEL wint bij opstart óók van een settings.json-"model"-pin
+    # (bewezen in matrix-test E, 2026-09-08).
+    set_model_env "deepseek-v4-flash[1m]"
     unset ANTHROPIC_API_KEY
 
     # Geen PROXY_PID gezet: de EXIT trap stopt deze gedeelde proxy bewust
