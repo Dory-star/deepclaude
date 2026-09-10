@@ -28,9 +28,13 @@ const MODEL_REMAP = {
     },
 };
 
-// Tarieven per 1M tokens (USD), piek/off-peak gemiddeld genomen.
-// DeepSeek per 10 sep 2026: Flash $0.15 in / $0.60 uit (off-peak, de helft
-// daarvan in daluren); Pro $0.66 / $1.98. Bron: api-docs.deepseek.com.
+// Tarieven per 1M tokens (USD), zoals door DeepSeek gefactureerd sinds
+// 10 sep 2026 (V4.1 Flash, mail + api-docs.deepseek.com).
+// Flits: OFF-PEAK $0.15 in / $0.60 uit; PIEK het dubbele ($0.30 / $1.20).
+// Piektijden (UTC): ma-vr 01:00-04:00 en 06:00-10:00 — in NL-tijd (CEST,
+// UTC+2) dus 03:00-06:00 en 08:00-12:00. Buiten die uren geldt de halve prijs.
+// De tabel hieronder rekent met het off-peak tarief; de werkelijke kosten
+// kunnen tijdens piekuren dus tot 2x hoger uitvallen.
 const PRICING_PER_M = {
     deepseek:   { input: 0.15,  output: 0.60 },
     openrouter: { input: 0.15,  output: 0.60 },
