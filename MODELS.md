@@ -102,7 +102,7 @@ zeker weet dat er geen andere sessies draaien.
 De Default-rij wordt ingesteld met `ANTHROPIC_MODEL`, in `launch_smart`:
 
 ```bash
-set_model_env "deepseek-v4-flash[1m]"
+set_model_env "deepseek-flash[1m]"
 ```
 
 - Dit wint bij opstart óók van een `"model"`-pin in settings.json.
