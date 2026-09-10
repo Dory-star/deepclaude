@@ -24,7 +24,7 @@ er een proxy tussen zit.
 | /model-rij      | env-variabele                    | Model                      | Provider    |
 |-----------------|----------------------------------|----------------------------|-------------|
 | Default         | `ANTHROPIC_MODEL` (in launch_smart) | `deepseek-flash[1m]`    | DeepSeek    |
-| Opus            | `ANTHROPIC_DEFAULT_OPUS_MODEL`   | `deepseek-v4-pro[1m]`      | DeepSeek    |
+| Opus            | `ANTHROPIC_DEFAULT_OPUS_MODEL`   | `deepseek-flash[1m]`       | DeepSeek    |
 | Sonnet          | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `deepseek-flash[1m]`       | DeepSeek    |
 | Fable           | `ANTHROPIC_DEFAULT_FABLE_MODEL`  | `moonshotai/kimi-k2.6`     | OpenRouter  |
 | Haiku           | `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | `z-ai/glm-5.2`             | OpenRouter  |
@@ -36,17 +36,29 @@ er een proxy tussen zit.
 terug). De bèta-naam `deepseek-v4.1-flash-expires-on-0910` is vervallen; die
 werkte op 10 sep nog, maar wordt ook al naar het productiemodel gestuurd.
 
-⚠️ **V4 Pro faseert uit.** Vanaf **14 sep 2026** routeert DeepSeek alle
-`deepseek-v4-pro`-requests naar V4.1 Flash tegen Flash-tarieven, tot een
-toekomstige V4.1 Pro verschijnt. De Opus-rij levert dan dus hetzelfde model
-als de rest — de rij blijft bestaan, maar is niet meer een ander model.
+⚠️ **V4 Pro is uit de config verwijderd (10 sep 2026).** Vanaf **14 sep 2026**
+routeert DeepSeek alle `deepseek-v4-pro`-requests naar V4.1 Flash tegen
+Flash-tarieven, tot een toekomstige V4.1 Pro verschijnt. Bovendien scoort
+V4.1 Flash inmiddels beter dan Pro. Daarom wijzen **alle rijen** nu naar
+flash; de Opus-rij bestaat nog, maar draait hetzelfde model.
+
+**Waarom dat geen cosmetische keuze was:** op 10 sep belandde een hervatte
+sessie ongemerkt op de Opus-rij en draaide 7 uur op `deepseek-v4-pro`
+(~$9,39 aan tokens, tegen ~$1,45 op flash-tarief). Eén model voor alle rijen
+haalt die valkuil weg.
+
+⚠️ **Herstart na een proxy-crash is het risicopunt.** De sessie van 10 sep
+startte op flash, de proxy werd om 09:32 herstart, en bij het hervatten om
+09:34 stond de sessie op pro. Let na een crash dus op welk model je draait
+(`/model`, of de proxy-log) — met de huidige configuratie maakt het niet meer
+uit, maar die controle is de gewoonte die je wil houden.
 
 ## Achterkant veranderen (welk model écht draait)
 
 ### 1. Slots in `deepclaude.sh` → `resolve_backend()` (smart-tak)
 
 ```bash
-opus="deepseek-v4-pro"; sonnet="deepseek-flash"
+opus="deepseek-flash"; sonnet="deepseek-flash"
 haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
 subagent="deepseek-flash"
 ```
@@ -104,10 +116,11 @@ set_model_env "deepseek-v4-flash[1m]"
 1. **De rijen zijn de env-slots.** Pas de env-variabelen aan en de rijen
    veranderen mee. Nieuwe env-var = nieuwe rij, direct zichtbaar na start.
 2. **"currently X" bij de Default-rij is misleidend.** Claude Code bouwt dat
-   label uit de Opus-slotwaarde (`Fie()` → `_6()` → `UL()` in de CLI-bundel).
-   Er staat dus bijvoorbeeld "currently deepseek-v4-pro[1m]" terwijl de rij
-   écht flash draait. Vertrouw bij twijfel op het ✔-vinkje en de proxy-log,
-   niet op dat label.
+   label uit de Opus-slotwaarde (`Fie()` → `_6()` → `UL()` in de CLI-bundel),
+   niet uit het model dat de rij écht draait. Sinds 10 sep wijzen alle rijen
+   naar flash, dus het label toont nu ook flash — maar de regel blijft: het
+   label is een afgeleide van de Opus-slot, geen weergave van de waarheid.
+   Vertrouw bij twijfel op het ✔-vinkje en de proxy-log, niet op dat label.
 3. **settings.json kan de boel "vervuild" achterlaten.** In `/model`:
    - **Enter** = model opslaan als je standaard voor nieuwe sessies → schrijft
      een `"model"`-pin in `~/.claude/settings.json`.
@@ -153,17 +166,21 @@ In een verse `deepclaude`-sessie:
 ## 14 september 2026: V4 Pro faseert uit
 
 DeepSeek routeert vanaf **14 sep 2026** alle `deepseek-v4-pro`-requests naar
-V4.1 Flash tegen Flash-tarieven. De Opus-rij levert dan hetzelfde model als de
-andere rijen.
+V4.1 Flash tegen Flash-tarieven.
 
-**Wat te doen als dat eenmaal zo is:** niets haastigs — de rij blijft werken,
-alleen met een ander onderliggend model. Wel eerlijk naar jezelf zijn bij het
-kiezen: de Opus-rij is dan geen "zwaarder model" meer. Wil je echt een ander
-model, gebruik dan Fable (Kimi) of Haiku (GLM).
+**Op 10 sep al doorgevoerd in de config**, om twee redenen: Flash scoort
+inmiddels beter dan Pro, en de Opus-rij was een kostenvalkuil (zie boven).
+Er valt per die datum dus niets meer te doen — er staat nergens nog een
+pro-model in de smart- of ds-tak.
 
-Zodra DeepSeek een **V4.1 Pro** uitbrengt, is dat de naam om in de Opus-slot te
-zetten — controleer dan `curl -s https://api.deepseek.com/models` voor de
-exacte model-ID, want DeepSeek wijzigt namen (zie de `deepseek-flash`-rename).
+Wil je tóch een ander model dan flash, gebruik dan Fable (Kimi) of Haiku
+(GLM); dat zijn de enige rijen die nog een ander model draaien.
+
+Zodra DeepSeek een **V4.1 Pro** uitbrengt, is dat de naam om eventueel in de
+Opus-slot te zetten — controleer dan `curl -s https://api.deepseek.com/models`
+voor de exacte model-ID, want DeepSeek wijzigt namen (zie de
+`deepseek-flash`-rename). Zet er dan bewust een prijscheck naast: dit is
+precies de rij waar de rekening van 10 sep vandaan kwam.
 
 ## 10 september 2026: bèta vervallen, modelnaam gewijzigd
 

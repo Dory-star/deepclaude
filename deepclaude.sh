@@ -84,10 +84,14 @@ resolve_backend() {
             #   draait V4.1-Flash; `deepseek-v4-flash` is alleen nog een
             #   legacy-alias naar hetzelfde model. De bèta-naam
             #   (deepseek-v4.1-flash-expires-on-0910) is vervallen.
-            #   LET OP: vanaf 14 sep 2026 routeert DeepSeek ook alle
-            #   deepseek-v4-pro-requests naar V4.1 Flash (Pro faseert uit),
-            #   dus de Opus-rij levert dan hetzelfde model als de rest.
-            opus="deepseek-v4-pro"; sonnet="deepseek-flash"
+            #   10 sep 2026: de Opus-rij stond op `deepseek-v4-pro`. Die is
+            #   hier bewust weggehaald. Reden: een hervatte sessie kon op de
+            #   Opus-rij belanden en dan urenlang ongemerkt op het dure model
+            #   draaien — 7 uur pro = ~$9 tegen ~$1,45 op flash. Flash scoort
+            #   inmiddels beter dan Pro op alle vlakken, en vanaf 14 sep 2026
+            #   routeert DeepSeek v4-pro-requests sowieso naar V4.1 Flash.
+            #   Daarom wijzen ALLE rijen naar flash: één model, geen valkuil.
+            opus="deepseek-flash"; sonnet="deepseek-flash"
             if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
                 haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
             else
@@ -99,7 +103,7 @@ resolve_backend() {
             key="${DEEPSEEK_API_KEY:-}"
             [[ -z "$key" ]] && { echo "ERROR: DEEPSEEK_API_KEY not set" >&2; exit 1; }
             url="$DEEPSEEK_URL"
-            opus="deepseek-v4-pro"; sonnet="deepseek-flash"
+            opus="deepseek-flash"; sonnet="deepseek-flash"
             haiku="deepseek-flash"; subagent="deepseek-flash"
             fable="deepseek-flash"
             ;;
@@ -287,8 +291,8 @@ show_help() {
     echo ""
     echo "Backends:"
     echo "  smart     One session, 5 rijen via /model (default): Default-rij draait"
-    echo "            deepseek-flash[1m] (= V4.1 Flash); Opus=deepseek-v4-pro[1m]"
-    echo "            (vanaf 14 sep 2026 ook V4.1 Flash — Pro faseert uit);"
+    echo "            deepseek-flash[1m] (= V4.1 Flash); Opus=deepseek-flash[1m]"
+    echo "            (alle rijen flash sinds 10 sep 2026 — Pro is vervallen);"
     echo "            Fable=moonshotai/kimi-k2.6; Haiku=z-ai/glm-5.2 (zie MODELS.md)"
     echo "            DeepSeek calls stay direct; GLM/Kimi go via OpenRouter."
     echo "  ds        DeepSeek direct (single backend, no proxy)"
@@ -326,8 +330,8 @@ run_benchmark() {
     for name in deepseek openrouter fireworks; do
         local url="" key="" model=""
         case "$name" in
-            deepseek)   url="$DEEPSEEK_URL"; key="${DEEPSEEK_API_KEY:-}"; model="deepseek-v4-pro" ;;
-            openrouter) url="$OPENROUTER_URL"; key="${OPENROUTER_API_KEY:-}"; model="deepseek/deepseek-v4-pro" ;;
+            deepseek)   url="$DEEPSEEK_URL"; key="${DEEPSEEK_API_KEY:-}"; model="deepseek-flash" ;;
+            openrouter) url="$OPENROUTER_URL"; key="${OPENROUTER_API_KEY:-}"; model="deepseek/deepseek-v4-flash" ;;
             fireworks)  url="$FIREWORKS_URL"; key="${FIREWORKS_API_KEY:-}"; model="accounts/fireworks/models/deepseek-v4-pro" ;;
         esac
         if [[ -z "$key" ]]; then echo "  $name: SKIP (no key)"; continue; fi

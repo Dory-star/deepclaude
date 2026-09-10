@@ -26,7 +26,7 @@ console.log(`Proxy on port ${proxy.port}`);
 
 // Set env vars for claude remote-control:
 // ANTHROPIC_BASE_URL=http://127.0.0.1:${proxy.port}
-// ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro
+// ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-flash
 // (do NOT set ANTHROPIC_AUTH_TOKEN — OAuth handles bridge auth)
 
 // When done:

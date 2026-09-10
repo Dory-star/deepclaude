@@ -11,17 +11,20 @@ const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per request
 // gematcht wordt (bijv. een stock `claude-*`-naam). Sinds 10 sep 2026 heet het
 // Flash-model `deepseek-flash` (V4.1 Flash); de oude `deepseek-v4-flash` is
 // alleen nog een legacy-alias naar hetzelfde model.
+// 10 sep 2026: de `claude-opus-*`-remaps wezen naar v4-pro. Die zijn naar
+// flash gezet — een ongematchte opus-naam mag nooit stil het dure model
+// aanroepen (zelfde reden als bij de Opus-rij in deepclaude.sh).
 const MODEL_REMAP = {
     deepseek: {
-        'claude-opus-4-6':    'deepseek-v4-pro',
-        'claude-opus-4-7':    'deepseek-v4-pro',
+        'claude-opus-4-6':    'deepseek-flash',
+        'claude-opus-4-7':    'deepseek-flash',
         'claude-sonnet-4-6':  'deepseek-flash',
         'claude-sonnet-4-5-20250929': 'deepseek-flash',
         'claude-haiku-4-5-20251001':  'deepseek-flash',
     },
     openrouter: {
-        'claude-opus-4-6':    'deepseek/deepseek-v4-pro',
-        'claude-opus-4-7':    'deepseek/deepseek-v4-pro',
+        'claude-opus-4-6':    'deepseek/deepseek-v4-flash',
+        'claude-opus-4-7':    'deepseek/deepseek-v4-flash',
         'claude-sonnet-4-6':  'deepseek/deepseek-v4-flash',
         'claude-sonnet-4-5-20250929': 'deepseek/deepseek-v4-flash',
         'claude-haiku-4-5-20251001':  'deepseek/deepseek-v4-flash',
