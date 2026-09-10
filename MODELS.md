@@ -19,29 +19,36 @@ De proxy routeert op het begin van de modelnaam (`deepseek-v4-*` → DeepSeek,
 `z-ai/*` en `moonshotai/*` → OpenRouter). Claude Code zelf weet niet eens dat
 er een proxy tussen zit.
 
-## Huidige indeling (smart, sinds 8 sep 2026)
+## Huidige indeling (smart, sinds 10 sep 2026)
 
-| /model-rij      | env-variabele                    | Model                                   | Provider    |
-|-----------------|----------------------------------|-----------------------------------------|-------------|
-| Default         | `ANTHROPIC_MODEL` (in launch_smart) | `deepseek-v4-flash[1m]`               | DeepSeek    |
-| Opus            | `ANTHROPIC_DEFAULT_OPUS_MODEL`   | `deepseek-v4-pro[1m]`                   | DeepSeek    |
-| Sonnet          | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `deepseek-v4.1-flash-expires-on-0910[1m]` | DeepSeek |
-| Fable           | `ANTHROPIC_DEFAULT_FABLE_MODEL`  | `moonshotai/kimi-k2.6`                  | OpenRouter  |
-| Haiku           | `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | `z-ai/glm-5.2`                          | OpenRouter  |
-| (subagenten)    | `CLAUDE_CODE_SUBAGENT_MODEL`     | `deepseek-v4-flash[1m]`                 | DeepSeek    |
+| /model-rij      | env-variabele                    | Model                      | Provider    |
+|-----------------|----------------------------------|----------------------------|-------------|
+| Default         | `ANTHROPIC_MODEL` (in launch_smart) | `deepseek-flash[1m]`    | DeepSeek    |
+| Opus            | `ANTHROPIC_DEFAULT_OPUS_MODEL`   | `deepseek-v4-pro[1m]`      | DeepSeek    |
+| Sonnet          | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `deepseek-flash[1m]`       | DeepSeek    |
+| Fable           | `ANTHROPIC_DEFAULT_FABLE_MODEL`  | `moonshotai/kimi-k2.6`     | OpenRouter  |
+| Haiku           | `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | `z-ai/glm-5.2`             | OpenRouter  |
+| (subagenten)    | `CLAUDE_CODE_SUBAGENT_MODEL`     | `deepseek-flash[1m]`       | DeepSeek    |
 
-Let op: **Default ≠ Sonnet.** De Default-rij draait gewone flash via
-`ANTHROPIC_MODEL`; de Sonnet-rij is 4.1-flash (bèta, vervalt 10 sep 2026 —
-daarna moet die slot terug naar `deepseek-v4-flash`, zie onderaan).
+**Naamgeving sinds 10 sep 2026:** het Flash-model heet officieel
+`deepseek-flash` en draait V4.1-Flash. `deepseek-v4-flash` werkt nog als
+**legacy-alias** naar hetzelfde model (de respons geeft `deepseek-flash`
+terug). De bèta-naam `deepseek-v4.1-flash-expires-on-0910` is vervallen; die
+werkte op 10 sep nog, maar wordt ook al naar het productiemodel gestuurd.
+
+⚠️ **V4 Pro faseert uit.** Vanaf **14 sep 2026** routeert DeepSeek alle
+`deepseek-v4-pro`-requests naar V4.1 Flash tegen Flash-tarieven, tot een
+toekomstige V4.1 Pro verschijnt. De Opus-rij levert dan dus hetzelfde model
+als de rest — de rij blijft bestaan, maar is niet meer een ander model.
 
 ## Achterkant veranderen (welk model écht draait)
 
 ### 1. Slots in `deepclaude.sh` → `resolve_backend()` (smart-tak)
 
 ```bash
-opus="deepseek-v4-pro"; sonnet="deepseek-v4.1-flash-expires-on-0910"
+opus="deepseek-v4-pro"; sonnet="deepseek-flash"
 haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
-subagent="deepseek-v4-flash"
+subagent="deepseek-flash"
 ```
 
 Regels:
@@ -55,11 +62,16 @@ Regels:
 
 ```js
 routes = [
-    { prefix: 'deepseek-v4-', backend: 'deepseek' },
+    { prefix: 'deepseek-', backend: 'deepseek' },
     { prefix: 'z-ai/', backend: 'openrouter' },
     { prefix: 'moonshotai/', backend: 'openrouter' },
 ];
 ```
+
+Let op: de prefix is **`deepseek-`** (niet `deepseek-v4-`) — sinds 10 sep heet
+het Flash-model `deepseek-flash`, zonder versienummer in de naam. OpenRouter-
+slugs bevatten een slash (`deepseek/deepseek-...`) en matchen hier dus bewust
+niet op; die gaan via hun eigen prefix naar OpenRouter.
 
 Nieuwe provider = nieuw object hier + backend-definitie in `BACKEND_DEFS`
 (url + naam van de key-env-var). Zonder match valt een model terug op
@@ -104,7 +116,7 @@ set_model_env "deepseek-v4-flash[1m]"
      behalve als `ANTHROPIC_MODEL` is gezet (smart-mode; zie hierboven).
      Vandaar dat `/model` meldt "applies on restart" of juist niet.
    - Escape om alles te omzeilen: start één keer met
-     `deepclaude -- --model deepseek-v4-flash[1m]` (of via `/model` daarna).
+     `deepclaude -- --model deepseek-flash[1m]` (of via `/model` daarna).
 4. **De `[1m]` in de rijnaam is normaal.** Claude Code plakt dat suffix zelf
    achter onbekende modellen; het hoort bij het 1M-mechanisme en wordt vóór
    het versturen weer gestript (door de CLI én door de proxy).
@@ -138,13 +150,35 @@ In een verse `deepclaude`-sessie:
 - "Say exactly: FLASH-OK" (of PRO-OK) als snelle model-identiteitstest —
   het antwoord verraadt welk model echt antwoordt.
 
-## 10 september 2026: 4.1-flash-exp vervalt
+## 14 september 2026: V4 Pro faseert uit
 
-Twee regels, meer niet:
+DeepSeek routeert vanaf **14 sep 2026** alle `deepseek-v4-pro`-requests naar
+V4.1 Flash tegen Flash-tarieven. De Opus-rij levert dan hetzelfde model als de
+andere rijen.
 
-1. `deepclaude.sh`, smart-tak: `sonnet="deepseek-v4-flash"` (was
-   `deepseek-v4.1-flash-expires-on-0910`).
-2. Help-tekst + MODELS.md aanpassen (deze tabel).
+**Wat te doen als dat eenmaal zo is:** niets haastigs — de rij blijft werken,
+alleen met een ander onderliggend model. Wel eerlijk naar jezelf zijn bij het
+kiezen: de Opus-rij is dan geen "zwaarder model" meer. Wil je echt een ander
+model, gebruik dan Fable (Kimi) of Haiku (GLM).
 
-Daarna verifiëren met de checklist hierboven. Er staat een herinnering
-ingesteld voor 10 sep 08:47.
+Zodra DeepSeek een **V4.1 Pro** uitbrengt, is dat de naam om in de Opus-slot te
+zetten — controleer dan `curl -s https://api.deepseek.com/models` voor de
+exacte model-ID, want DeepSeek wijzigt namen (zie de `deepseek-flash`-rename).
+
+## 10 september 2026: bèta vervallen, modelnaam gewijzigd
+
+Doorgevoerd op 10 sep. Wat er is gebeurd:
+
+1. **Modelnaam gewijzigd:** Flash heet nu officieel `deepseek-flash` (draait
+   V4.1-Flash). `deepseek-v4-flash` is een legacy-alias naar hetzelfde model.
+   Alle slots, de remap-tabel en de dispatch-prefix zijn bijgewerkt.
+2. **Dispatch-prefix verruimd** van `deepseek-v4-` naar `deepseek-` — anders
+   zou `deepseek-flash` niet meer gematcht worden en stil op de fallback
+   belanden.
+3. **Prijzen gedaald:** Flash $0.15 in / $0.60 uit (was $0.44/$0.87), dus de
+   kostentabel in `model-proxy.js` is bijgewerkt.
+
+**Les voor de volgende keer:** modelnamen bij DeepSeek zijn niet stabiel — ze
+hernoemen zonder de oude naam meteen te killen. Check bij twijfel altijd
+`curl -s https://api.deepseek.com/models` en het `model`-veld in de respons,
+niet de documentatie alleen.

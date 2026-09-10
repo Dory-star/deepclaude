@@ -58,12 +58,16 @@ if (targetUrl && apiKey && !dispatchFlag) {
     let routes;
     let defaultMode = mode || 'anthropic';
     if (dispatchFlag) {
-        // Per-model dispatch: deepseek-v4-* → DeepSeek direct; z-ai/* and
+        // Per-model dispatch: deepseek-* → DeepSeek direct; z-ai/* and
         // moonshotai/* → OpenRouter. Fallback (unmatched model, non-model
         // paths) → DeepSeek, so claude-* remaps work like the ds route.
+        // Prefix is 'deepseek-' (niet 'deepseek-v4-'): sinds 10 sep 2026 heet
+        // het Flash-model `deepseek-flash` zonder versie in de naam. Let op:
+        // OpenRouter-slugs gebruiken een slash (`deepseek/deepseek-...`) en
+        // matchen hier dus bewust niet op.
         defaultMode = mode || 'deepseek';
         routes = [
-            { prefix: 'deepseek-v4-', backend: 'deepseek' },
+            { prefix: 'deepseek-', backend: 'deepseek' },
             { prefix: 'z-ai/', backend: 'openrouter' },
             { prefix: 'moonshotai/', backend: 'openrouter' },
         ];

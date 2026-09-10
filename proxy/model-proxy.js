@@ -7,13 +7,17 @@ const ANTHROPIC_FALLBACK = 'https://api.anthropic.com';
 const MODEL_PATHS = ['/v1/messages'];
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per request
 
+// Fallback-remap: alleen gebruikt als het model NIET door de dispatch-routes
+// gematcht wordt (bijv. een stock `claude-*`-naam). Sinds 10 sep 2026 heet het
+// Flash-model `deepseek-flash` (V4.1 Flash); de oude `deepseek-v4-flash` is
+// alleen nog een legacy-alias naar hetzelfde model.
 const MODEL_REMAP = {
     deepseek: {
         'claude-opus-4-6':    'deepseek-v4-pro',
         'claude-opus-4-7':    'deepseek-v4-pro',
-        'claude-sonnet-4-6':  'deepseek-v4-flash',
-        'claude-sonnet-4-5-20250929': 'deepseek-v4-flash',
-        'claude-haiku-4-5-20251001':  'deepseek-v4-flash',
+        'claude-sonnet-4-6':  'deepseek-flash',
+        'claude-sonnet-4-5-20250929': 'deepseek-flash',
+        'claude-haiku-4-5-20251001':  'deepseek-flash',
     },
     openrouter: {
         'claude-opus-4-6':    'deepseek/deepseek-v4-pro',
@@ -24,12 +28,15 @@ const MODEL_REMAP = {
     },
 };
 
+// Tarieven per 1M tokens (USD), piek/off-peak gemiddeld genomen.
+// DeepSeek per 10 sep 2026: Flash $0.15 in / $0.60 uit (off-peak, de helft
+// daarvan in daluren); Pro $0.66 / $1.98. Bron: api-docs.deepseek.com.
 const PRICING_PER_M = {
-    deepseek:   { input: 0.44,  output: 0.87 },
-    openrouter: { input: 0.44,  output: 0.87 },
+    deepseek:   { input: 0.15,  output: 0.60 },
+    openrouter: { input: 0.15,  output: 0.60 },
     fireworks:  { input: 1.74,  output: 3.48 },
     anthropic:  { input: 3.00,  output: 15.00 },
-    _single:    { input: 0.44,  output: 0.87 },
+    _single:    { input: 0.15,  output: 0.60 },
 };
 
 /**

@@ -80,27 +80,28 @@ resolve_backend() {
             [[ -z "$key" ]] && { echo "ERROR: DEEPSEEK_API_KEY not set" >&2; exit 1; }
             url="$DEEPSEEK_URL"
             # 'smart'-slots = de rijen in /model (volledige uitleg: MODELS.md).
-            #   Default-rij draait deepseek-v4-flash[1m] — ingesteld via
-            #   ANTHROPIC_MODEL in launch_smart, los van deze slots.
-            #   Opus = pro; Sonnet = 4.1-flash-exp (bèta, vervalt 2026-09-10 —
-            #   dan terug naar deepseek-v4-flash); Fable = Kimi; Haiku = GLM.
-            #   Subagents draaien de stabiele flash (de EXP heeft een
-            #   20-requests-concurrencylimiet per account).
-            opus="deepseek-v4-pro"; sonnet="deepseek-v4.1-flash-expires-on-0910"
+            #   10 sep 2026: het Flash-model heet officieel `deepseek-flash` en
+            #   draait V4.1-Flash; `deepseek-v4-flash` is alleen nog een
+            #   legacy-alias naar hetzelfde model. De bèta-naam
+            #   (deepseek-v4.1-flash-expires-on-0910) is vervallen.
+            #   LET OP: vanaf 14 sep 2026 routeert DeepSeek ook alle
+            #   deepseek-v4-pro-requests naar V4.1 Flash (Pro faseert uit),
+            #   dus de Opus-rij levert dan hetzelfde model als de rest.
+            opus="deepseek-v4-pro"; sonnet="deepseek-flash"
             if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
                 haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
             else
-                haiku="deepseek-v4-flash"; fable="deepseek-v4-flash"
+                haiku="deepseek-flash"; fable="deepseek-flash"
             fi
-            subagent="deepseek-v4-flash"   # stabiele flash voor subagenten (20-concurrency-limiet EXP)
+            subagent="deepseek-flash"   # zelfde model als de default-rij
             ;;
         ds|deepseek)
             key="${DEEPSEEK_API_KEY:-}"
             [[ -z "$key" ]] && { echo "ERROR: DEEPSEEK_API_KEY not set" >&2; exit 1; }
             url="$DEEPSEEK_URL"
-            opus="deepseek-v4-pro"; sonnet="deepseek-v4-flash"
-            haiku="deepseek-v4-flash"; subagent="deepseek-v4-flash"
-            fable="deepseek-v4-flash"
+            opus="deepseek-v4-pro"; sonnet="deepseek-flash"
+            haiku="deepseek-flash"; subagent="deepseek-flash"
+            fable="deepseek-flash"
             ;;
         or|openrouter)
             key="${OPENROUTER_API_KEY:-}"
@@ -171,7 +172,7 @@ show_status() {
     echo "    FIREWORKS_API_KEY:   $(mask_key "${FIREWORKS_API_KEY:-}")"
     echo ""
     echo "  Backends:"
-    echo "    deepclaude                  # SMART: Default=flash, Opus=pro, Sonnet=4.1-exp, Fable=Kimi, Haiku=GLM (zie MODELS.md)"
+    echo "    deepclaude                  # SMART: Default=flash (V4.1), Opus=pro, Sonnet=flash, Fable=Kimi, Haiku=GLM (zie MODELS.md)"
     echo "    deepclaude -b ds            # DeepSeek direct (geen proxy)"
     echo "    deepclaude -b or            # OpenRouter: GLM 5.2 + Kimi K2.6"
     echo "    deepclaude -b fw            # Fireworks AI (fastest)"
@@ -286,8 +287,8 @@ show_help() {
     echo ""
     echo "Backends:"
     echo "  smart     One session, 5 rijen via /model (default): Default-rij draait"
-    echo "            deepseek-v4-flash[1m]; Opus=deepseek-v4-pro[1m];"
-    echo "            Sonnet=deepseek-v4.1-flash-expires-on-0910[1m] (bèta t/m 2026-09-10);"
+    echo "            deepseek-flash[1m] (= V4.1 Flash); Opus=deepseek-v4-pro[1m]"
+    echo "            (vanaf 14 sep 2026 ook V4.1 Flash — Pro faseert uit);"
     echo "            Fable=moonshotai/kimi-k2.6; Haiku=z-ai/glm-5.2 (zie MODELS.md)"
     echo "            DeepSeek calls stay direct; GLM/Kimi go via OpenRouter."
     echo "  ds        DeepSeek direct (single backend, no proxy)"
@@ -418,7 +419,7 @@ launch_remote() {
 }
 
 launch_smart() {
-    resolve_backend   # 'smart' slots: Default=flash, Opus=pro, Sonnet=4.1-exp, Fable=Kimi, Haiku=GLM
+    resolve_backend   # 'smart' slots: Default=flash, Opus=pro, Sonnet=flash, Fable=Kimi, Haiku=GLM
 
     echo "  Launching Claude Code via smart proxy (5 /model-rijen)..."
     echo "  Default-rij: deepseek-v4-flash[1m] (via ANTHROPIC_MODEL, zie MODELS.md)"
@@ -473,10 +474,11 @@ launch_smart() {
 
     export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
     export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
-    # Default-rij = gewone flash (1M-context), los van de Sonnet-slot (4.1-exp).
-    # ANTHROPIC_MODEL wint bij opstart óók van een settings.json-"model"-pin
-    # (bewezen in matrix-test E, 2026-09-08).
-    set_model_env "deepseek-v4-flash[1m]"
+    # Default-rij = flash (1M-context). Sinds 10 sep 2026 heet dat model
+    # officieel `deepseek-flash` (V4.1 Flash); de oude naam werkt nog als
+    # legacy-alias. ANTHROPIC_MODEL wint bij opstart óók van een
+    # settings.json-"model"-pin (bewezen in matrix-test E, 2026-09-08).
+    set_model_env "deepseek-flash[1m]"
     unset ANTHROPIC_API_KEY
 
     # Geen PROXY_PID gezet: de EXIT trap stopt deze gedeelde proxy bewust
