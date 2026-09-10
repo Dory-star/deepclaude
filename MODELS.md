@@ -176,7 +176,11 @@ Doorgevoerd op 10 sep. Wat er is gebeurd:
    zou `deepseek-flash` niet meer gematcht worden en stil op de fallback
    belanden.
 3. **Prijzen gedaald:** Flash $0.15 in / $0.60 uit (was $0.44/$0.87), dus de
-   kostentabel in `model-proxy.js` is bijgewerkt.
+   kostentabel in `model-proxy.js` is bijgewerkt. Let op de **piektijden**
+   (UTC ma-vr 01:00-04:00 en 06:00-10:00 = NL-tijd 03:00-06:00 en
+   08:00-12:00): dan is het tarief het dubbele. De kostentabel rekent met
+   off-peak, dus tijdens piekuren kan het werkelijke bedrag 2x hoger zijn.
+   Cache-hits zijn verwaarloosbaar goedkoop ($0.003/1M off-peak).
 
 **Les voor de volgende keer:** modelnamen bij DeepSeek zijn niet stabiel — ze
 hernoemen zonder de oude naam meteen te killen. Check bij twijfel altijd
