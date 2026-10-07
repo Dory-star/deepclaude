@@ -6,6 +6,9 @@ const BACKEND_DEFS = {
     deepseek: { url: 'https://api.deepseek.com/anthropic', keyEnv: 'DEEPSEEK_API_KEY' },
     openrouter: { url: 'https://openrouter.ai/api/v1', keyEnv: 'OPENROUTER_API_KEY' },
     fireworks: { url: 'https://api.fireworks.ai/inference/v1', keyEnv: 'FIREWORKS_API_KEY' },
+    // Mistral praat alleen OpenAI-formaat; verzoek/antwoord worden vertaald
+    // door mistral-translate.js (zie routes hieronder, translate: 'mistral').
+    mistral: { url: 'https://api.mistral.ai/v1', keyEnv: 'MISTRAL_API_KEY' },
 };
 
 const args = process.argv.slice(2);
@@ -70,6 +73,7 @@ if (targetUrl && apiKey && !dispatchFlag) {
             { prefix: 'deepseek-', backend: 'deepseek' },
             { prefix: 'z-ai/', backend: 'openrouter' },
             { prefix: 'moonshotai/', backend: 'openrouter' },
+            { prefix: 'mistral-', backend: 'mistral', translate: 'mistral' },
         ];
     }
 

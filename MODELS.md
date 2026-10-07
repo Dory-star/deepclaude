@@ -19,16 +19,58 @@ De proxy routeert op het begin van de modelnaam (`deepseek-v4-*` → DeepSeek,
 `z-ai/*` en `moonshotai/*` → OpenRouter). Claude Code zelf weet niet eens dat
 er een proxy tussen zit.
 
-## Huidige indeling (smart, sinds 10 sep 2026)
+## Huidige indeling (smart, sinds 29 sep 2026 — "optie C")
 
 | /model-rij      | env-variabele                    | Model                      | Provider    |
 |-----------------|----------------------------------|----------------------------|-------------|
 | Default         | `ANTHROPIC_MODEL` (in launch_smart) | `deepseek-flash[1m]`    | DeepSeek    |
-| Opus            | `ANTHROPIC_DEFAULT_OPUS_MODEL`   | `deepseek-flash[1m]`       | DeepSeek    |
+| Opus            | `ANTHROPIC_DEFAULT_OPUS_MODEL`   | `mistral-large-4`          | Mistral     |
 | Sonnet          | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `deepseek-flash[1m]`       | DeepSeek    |
-| Fable           | `ANTHROPIC_DEFAULT_FABLE_MODEL`  | `moonshotai/kimi-k2.6`     | OpenRouter  |
-| Haiku           | `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | `z-ai/glm-5.2`             | OpenRouter  |
+| Fable           | `ANTHROPIC_DEFAULT_FABLE_MODEL`  | `z-ai/glm-5.2`             | OpenRouter  |
+| Haiku           | `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | `deepseek-flash`           | DeepSeek    |
 | (subagenten)    | `CLAUDE_CODE_SUBAGENT_MODEL`     | `deepseek-flash[1m]`       | DeepSeek    |
+
+### Mistral-rij (7 okt 2026): Opus = Mistral Large 4
+
+- `mistral-large-4` (Le Chonk, publieke API-preview) draait via de route
+  `mistral-` → backend `mistral` (api.mistral.ai). **Geen `[1m]`-suffix**:
+  context is 512K en de Anthropic-context-header heeft op Mistral geen zin.
+- Mistral praat géén Anthropic-formaat: verzoek/antwoord worden vertaald in
+  `proxy/mistral-translate.js` (route-flag `translate: 'mistral'`). Zie ook de
+  wire-patches-tabel in `proxy/README.md`.
+- **Standaard `reasoning_effort: "none"`** (bewezen: platte tekst, tools en
+  streaming werken; 6x minder output-tokens dan "high"). Aanzetten kan met
+  `MISTRAL_REASONING_EFFORT=high` in de omgeving vóór het starten van de proxy.
+- **Vereist `MISTRAL_API_KEY` in de omgeving van het proxy-proces.** Een
+  handmatige herstart moet dus vanuit een shell met `~/.zshrc` gebeuren,
+  anders wordt de route stil overgeslagen (fallback → luide DeepSeek-fout).
+- Kosten: preview-tarief $0,68/$2,09 per M (≈2 weken), daarna $1,36/$4,18 —
+  pas de `mistral`-regel in `PRICING_PER_M` (model-proxy.js) daarna aan.
+- Terugdraaien: `opus="deepseek-flash"` in `resolve_backend()` (smart-tak).
+
+### ⚠️ Waarom de Haiku-rij géén OpenRouter meer is (29 sep 2026)
+
+Dit was een **stille kostenpost van ~$50 in 24 dagen**. De Haiku-rij draait niet
+alleen wat je ziet, maar vooral **onzichtbare achtergrondtaken**: elke websearch
+(voor het samenvatten van resultaten), gesprekstitels, kleine hulpklusjes.
+
+Gemeten over 24 dagen:
+
+| | DeepSeek (direct) | OpenRouter (GLM via Haiku-rij) |
+|---|---|---|
+| Kosten | ~$0,45/dag | **~$2,08/dag** |
+| Tokens | 7,5 miljard | 40,5 miljoen |
+| Prijs per M | ~$0,011 | **~$1,24** |
+
+**~115x duurder per token.** Dezelfde 40,5 miljoen tokens hadden op DeepSeek
+~$0,43 gekost in plaats van $50.
+
+**Optie C (wat nu staat):** Haiku → DeepSeek (achtergrond blijft goedkoop),
+Fable → GLM 5.2 (bewust kiesbaar via `/model` voor reviewwerk met "andere ogen").
+Zo blijft de keuze bestaan, maar alleen wanneer je hem zelf maakt.
+
+Let op: de Fable-rij vereist **OpenRouter-tegoed**. Staat dat op nul, dan faalt
+die rij — de rest werkt gewoon door op DeepSeek.
 
 **Naamgeving sinds 10 sep 2026:** het Flash-model heet officieel
 `deepseek-flash` en draait V4.1-Flash. `deepseek-v4-flash` werkt nog als

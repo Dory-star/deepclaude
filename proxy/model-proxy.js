@@ -2,6 +2,7 @@ import { createServer } from 'http';
 import { request as httpsRequest } from 'https';
 import { URL } from 'url';
 import { Transform } from 'stream';
+import { toMistralRequest, fromMistralResponse, createMistralStreamTranslator } from './mistral-translate.js';
 
 const ANTHROPIC_FALLBACK = 'https://api.anthropic.com';
 const MODEL_PATHS = ['/v1/messages'];
@@ -43,6 +44,9 @@ const PRICING_PER_M = {
     openrouter: { input: 0.15,  output: 0.60 },
     fireworks:  { input: 1.74,  output: 3.48 },
     anthropic:  { input: 3.00,  output: 15.00 },
+    // Mistral Large 4 — preview-tarief (50% korting, ~2 weken vanaf 6 okt 2026);
+    // normaal tarief is $1.36/$4.18. Aanpassen zodra de korting vervalt.
+    mistral:    { input: 0.68,  output: 2.09 },
     _single:    { input: 0.15,  output: 0.60 },
 };
 
@@ -136,6 +140,138 @@ function stripUnsignedThinkingBlocks(body) {
     }
 }
 
+/**
+ * DeepSeek's schema-validator weigert de regex-escape `\0` (NUL) met
+ * "… is not a \"regex\"", terwijl `\x00` — semantisch identiek — wél
+ * doorkomt. Claude Code's Artifact-tool draagt conditioneel een
+ * `file_paths`-veld met pattern `^[^\0]*$`; zodra dat meegaat 400't ELK
+ * verzoek naar DeepSeek, ongeacht het model in de request.
+ *
+ * Getest 24 sep 2026 tegen api.deepseek.com/anthropic:
+ *   ^[a-z]+$ → 200   ^[^\0]*$ → 400   ^[^\x00]*$ → 200
+ * OpenRouter accepteert alle drie; alleen DeepSeek is hier streng.
+ *
+ * Herschrijft uitsluitend `pattern`-waarden binnen `tools[].input_schema`;
+ * de rest van de body blijft ongemoeid. `(?<!\\)` voorkomt dat een
+ * letterlijke backslash-0 (`\\0`) per ongeluk wordt meegenomen.
+ */
+export function sanitizeToolSchemas(body) {
+    if (!Array.isArray(body?.tools)) return false;
+    let changed = false;
+    for (const tool of body.tools) {
+        if (walkRewritePatterns(tool?.input_schema, 0)) changed = true;
+    }
+    return changed;
+}
+
+function walkRewritePatterns(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 40) return false;
+    let changed = false;
+    if (Array.isArray(node)) {
+        for (const item of node) {
+            if (walkRewritePatterns(item, depth + 1)) changed = true;
+        }
+        return changed;
+    }
+    for (const key of Object.keys(node)) {
+        const value = node[key];
+        if (key === 'pattern' && typeof value === 'string') {
+            const fixed = value.replace(/(?<!\\)\\0/g, '\\x00');
+            if (fixed !== value) { node[key] = fixed; changed = true; }
+        } else if (walkRewritePatterns(value, depth + 1)) {
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+// Claude Code stuurt sinds ~2.1.29x de bèta-header `inline-tools-2026-09-15`
+// mee; de bijbehorende body-blokken (tool_addition met tool_definition)
+// worden hieronder geconverteerd. Header en blok zijn een paar: de bèta-token
+// gaat er dus ook uit. Prefix-match, zodat een nieuwere datumversie
+// (inline-tools-2026-… ) automatisch meegaat.
+const INLINE_TOOLS_BETA_PREFIX = 'inline-tools';
+
+/**
+ * Claude Code (≥ ~2.1.29x) kondigt tools die midden in een sessie bijkomen
+ * ("late" MCP-/plugin-tools, ToolSearch-resultaten) aan ín het gesprek, als
+ * synthetisch role:"system"-bericht met tool_addition-blokken. Onder de
+ * Claude-API-bèta `inline-tools-2026-09-15` mag zo'n blok de tool-definitie
+ * *by value* dragen:
+ *   {type:"tool_addition", tool:{type:"tool_definition", definition:{…}}}
+ * DeepSeek's Anthropic-endpoint kent alleen de oudere variant
+ * ({tool:{type:"tool_reference", name}}) en weigert het hele verzoek met 422
+ * — "unknown variant `tool_definition`, expected `tool_reference`". Omdat
+ * zo'n blok in de gespreksgeschiedenis zit, faalt daarna ELK bericht in die
+ * sessie (7 okt 2026: sessie "Data facturen en offertes"; /model wisselen
+ * hielp niet — de validatie gebeurt vóór modelkeuze).
+ *
+ * Aanpak (bewust smal, net als sanitizeToolSchemas hierboven):
+ *  - elk tool_addition/tool_removal-blok waarvan `tool.type` niet
+ *    `tool_reference` is (tool_definition, mcp_toolset_reference, …) wordt
+ *    geconverteerd naar tool_reference als de toolnaam in body.tools staat;
+ *  - anders: blok droppen (die ene tool is dan mid-sessie niet beschikbaar —
+ *    nog altijd beter dan een sessie waarin niets meer werkt);
+ *  - berichten die daardoor leeg raken worden verwijderd.
+ * Alleen de wire naar de backend verandert; de client-historie blijft intact
+ * en de uitkomst is deterministisch (stabiele prefix = context-cache heel).
+ */
+export function sanitizeInlineToolBlocks(body) {
+    const result = { converted: 0, dropped: 0 };
+    if (!Array.isArray(body?.messages)) return result;
+
+    const declared = new Set(
+        (Array.isArray(body.tools) ? body.tools : [])
+            .map(t => t?.name)
+            .filter(n => typeof n === 'string')
+    );
+
+    const messages = [];
+    for (const msg of body.messages) {
+        if (!Array.isArray(msg?.content)) { messages.push(msg); continue; }
+        let changed = false;
+        const content = [];
+        for (const block of msg.content) {
+            const isToolChange = block?.type === 'tool_addition' || block?.type === 'tool_removal';
+            const tool = block?.tool;
+            if (!isToolChange || tool?.type === 'tool_reference') {
+                content.push(block);
+                continue;
+            }
+            changed = true;
+            const name = typeof tool?.name === 'string' ? tool.name
+                : typeof tool?.definition?.name === 'string' ? tool.definition.name
+                : null;
+            if (name && declared.has(name)) {
+                content.push({ ...block, tool: { type: 'tool_reference', name } });
+                result.converted++;
+            } else {
+                result.dropped++;
+            }
+        }
+        if (!changed) { messages.push(msg); continue; }
+        if (content.length > 0) messages.push({ ...msg, content });
+    }
+    if (result.converted + result.dropped > 0) body.messages = messages;
+    return result;
+}
+
+/**
+ * Haalt de inline-tools-bèta uit de `anthropic-beta`-header (komma-lijst).
+ * Alleen die token; andere bèta's blijven staan. Retourneert of er iets is
+ * verwijderd. Zie sanitizeInlineToolBlocks hierboven voor het waarom.
+ */
+export function stripInlineToolsBeta(headers) {
+    const raw = headers?.['anthropic-beta'];
+    if (typeof raw !== 'string' || !raw) return false;
+    const tokens = raw.split(',').map(t => t.trim()).filter(Boolean);
+    const kept = tokens.filter(t => !t.startsWith(INLINE_TOOLS_BETA_PREFIX));
+    if (kept.length === tokens.length) return false;
+    if (kept.length === 0) delete headers['anthropic-beta'];
+    else headers['anthropic-beta'] = kept.join(',');
+    return true;
+}
+
 export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends, defaultMode, routes }) {
     return new Promise((resolve, reject) => {
         const initialTarget = new URL(targetUrl);
@@ -147,7 +283,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 allBackends[name] = {
                     target: new URL(cfg.url),
                     apiKey: cfg.apiKey,
-                    useBearer: cfg.url.includes('openrouter') || cfg.url.includes('fireworks'),
+                    useBearer: cfg.url.includes('openrouter') || cfg.url.includes('fireworks') || cfg.url.includes('mistral'),
                 };
             }
         }
@@ -169,7 +305,10 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                     name: typeof r.backend === 'string' ? r.backend : 'route',
                     target: new URL(urlStr),
                     apiKey: b.apiKey,
-                    useBearer: /openrouter|fireworks/i.test(urlStr),
+                    useBearer: /openrouter|fireworks|mistral/i.test(urlStr),
+                    // translate: 'mistral' → verzoek/antwoord worden vertaald
+                    // tussen Anthropic- en OpenAI-formaat (zie mistral-translate.js)
+                    translate: r.translate || null,
                 });
             }
             // Longest prefix first so z-ai/glm-5.2 wins over a bare z-ai/ rule.
@@ -324,7 +463,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 // → OpenRouter — so one Claude Code session can hop between
                 // providers via /model. Anything the routes don't match falls
                 // back to the session target (deepseek), like a plain ds session.
-                let dest, reqKey, reqBearer, backendName, remapModel;
+                let dest, reqKey, reqBearer, backendName, remapModel, translateKind = null;
                 let parsed = null;
                 try { parsed = JSON.parse(body); } catch { /* not JSON */ }
 
@@ -344,6 +483,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                         reqKey = route.apiKey;
                         reqBearer = route.useBearer;
                         backendName = route.name;
+                        translateKind = route.translate;
                     } else {
                         dest = state.target;
                         reqKey = state.apiKey;
@@ -375,6 +515,8 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 } else {
                     fullPath = clientReq.url;
                 }
+                // Mistral praat geen Anthropic-paden: altijd naar chat/completions.
+                if (isModelCall && translateKind === 'mistral') fullPath = '/v1/chat/completions';
 
                 const reqId = ++reqCount;
                 const t0 = Date.now();
@@ -386,6 +528,20 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
 
                 const headers = { ...clientReq.headers, host: dest.host };
                 delete headers['content-length'];
+
+                // De inline-tools-bèta en zijn body-blokken zijn een paar: de
+                // blokken worden hieronder geconverteerd, dus deze bèta-token
+                // gaat er ook uit (een strikte backend kan anders alsnog
+                // weigeren). Alleen voor model-calls; anthropic-mode blijft
+                // volledig transparant.
+                if (isModelCall && stripInlineToolsBeta(headers)) {
+                    console.log(`[MODEL-PROXY] #${reqId} bèta-header 'inline-tools' gestript voor ${backendName}`);
+                }
+                if (isModelCall && translateKind === 'mistral') {
+                    // Anthropic-eigen headers hebben voor Mistral geen betekenis
+                    delete headers['anthropic-beta'];
+                    delete headers['anthropic-version'];
+                }
 
                 if (isModelCall) {
                     delete headers['authorization'];
@@ -429,8 +585,24 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 if (isModelCall) {
                     try {
                         const p = JSON.parse(body);
-                        stripAllThinkingBlocks(p);
-                        body = Buffer.from(JSON.stringify(p));
+                        if (translateKind === 'mistral') {
+                            const m = toMistralRequest(p, {
+                                model: p.model,
+                                reasoningEffort: process.env.MISTRAL_REASONING_EFFORT || 'none',
+                            });
+                            body = Buffer.from(JSON.stringify(m));
+                            console.log(`[MODEL-PROXY] #${reqId} mistral-vertaling (${m.messages?.length || 0} berichten, ${m.tools?.length || 0} tools, reasoning=${m.reasoning_effort || 'off'})`);
+                        } else {
+                            stripAllThinkingBlocks(p);
+                            if (sanitizeToolSchemas(p)) {
+                                console.log(`[MODEL-PROXY] #${reqId} tool-schema gepatcht (\\0 → \\x00 voor ${backendName})`);
+                            }
+                            const inline = sanitizeInlineToolBlocks(p);
+                            if (inline.converted || inline.dropped) {
+                                console.log(`[MODEL-PROXY] #${reqId} inline-tools gepatcht voor ${backendName} (${inline.converted} → tool_reference, ${inline.dropped} gedropt)`);
+                            }
+                            body = Buffer.from(JSON.stringify(p));
+                        }
                     } catch { /* pass through */ }
                 }
 
@@ -451,19 +623,69 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
 
                     const ct = proxyRes.headers['content-type'] || '';
                     const isSSE = ct.includes('text/event-stream');
+                    const isMistral = isModelCall && translateKind === 'mistral';
 
-                    if (isModelCall && isSSE) {
-                        clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
-                        const norm = new UsageNormalizer((inp, out) => recordUsage(backendName, inp, out));
-                        proxyRes.pipe(norm).pipe(clientRes);
+                    if (isMistral && proxyRes.statusCode >= 400) {
+                        // Mistral-fout (OpenAI-formaat) → Anthropic-error-envelope.
+                        const respChunks = [];
+                        proxyRes.on('data', c => respChunks.push(c));
                         proxyRes.on('end', () => {
-                            console.log(`[MODEL-PROXY] #${reqId} done in ${((Date.now() - t0) / 1000).toFixed(1)}s (${norm._inputTokens}in/${norm._outputTokens}out)`);
+                            let msg = `Mistral HTTP ${proxyRes.statusCode}`;
+                            try {
+                                const j = JSON.parse(Buffer.concat(respChunks).toString());
+                                msg = j?.error?.message || j?.message || msg;
+                            } catch {}
+                            console.error(`[MODEL-PROXY] #${reqId} mistral fout: ${msg}`);
+                            clientRes.writeHead(proxyRes.statusCode, { 'content-type': 'application/json' });
+                            clientRes.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: msg } }));
                         });
+                    } else if (isModelCall && isSSE) {
+                        if (isMistral) {
+                            // OpenAI-SSE → Anthropic-SSE (mistral-translate.js).
+                            clientRes.writeHead(proxyRes.statusCode, { ...proxyRes.headers, 'content-type': 'text/event-stream' });
+                            const t = createMistralStreamTranslator({
+                                model: parsed?.model,
+                                onUsage: (inp, out) => recordUsage(backendName, inp, out),
+                            });
+                            const adapter = new Transform({
+                                transform(chunk, _enc, cb) {
+                                    try { t.feed(chunk.toString()); }
+                                    catch (e) { console.error(`[MODEL-PROXY] mistral-stream fout: ${e.message}`); }
+                                    cb();
+                                },
+                                flush(cb) { try { t.end(); } catch {} cb(); },
+                            });
+                            t.setSink(s => { try { adapter.push(s); } catch { /* client weg */ } });
+                            proxyRes.pipe(adapter).pipe(clientRes);
+                            proxyRes.on('end', () => {
+                                console.log(`[MODEL-PROXY] #${reqId} mistral-stream klaar in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+                            });
+                        } else {
+                            clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
+                            const norm = new UsageNormalizer((inp, out) => recordUsage(backendName, inp, out));
+                            proxyRes.pipe(norm).pipe(clientRes);
+                            proxyRes.on('end', () => {
+                                console.log(`[MODEL-PROXY] #${reqId} done in ${((Date.now() - t0) / 1000).toFixed(1)}s (${norm._inputTokens}in/${norm._outputTokens}out)`);
+                            });
+                        }
                     } else if (isModelCall && ct.includes('application/json')) {
                         const respChunks = [];
                         proxyRes.on('data', c => respChunks.push(c));
                         proxyRes.on('end', () => {
                             const raw = Buffer.concat(respChunks);
+                            if (isMistral) {
+                                // OpenAI-JSON → Anthropic-message.
+                                let out;
+                                try {
+                                    const j = JSON.parse(raw.toString());
+                                    if (j.usage) recordUsage(backendName, j.usage.prompt_tokens, j.usage.completion_tokens);
+                                    out = Buffer.from(JSON.stringify(fromMistralResponse(j, parsed?.model)));
+                                } catch { out = raw; }
+                                clientRes.writeHead(proxyRes.statusCode, { ...proxyRes.headers, 'content-type': 'application/json', 'content-length': out.length });
+                                clientRes.end(out);
+                                console.log(`[MODEL-PROXY] #${reqId} mistral-json klaar in ${((Date.now() - t0) / 1000).toFixed(1)}s (${out.length}b)`);
+                                return;
+                            }
                             const fixed = normalizeJsonBody(raw);
                             try {
                                 const j = JSON.parse(fixed);

@@ -91,12 +91,19 @@ resolve_backend() {
             #   inmiddels beter dan Pro op alle vlakken, en vanaf 14 sep 2026
             #   routeert DeepSeek v4-pro-requests sowieso naar V4.1 Flash.
             #   Daarom wijzen ALLE rijen naar flash: één model, geen valkuil.
-            opus="deepseek-flash"; sonnet="deepseek-flash"
-            if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-                haiku="z-ai/glm-5.2"; fable="moonshotai/kimi-k2.6"
-            else
-                haiku="deepseek-flash"; fable="deepseek-flash"
-            fi
+            # 7 okt 2026 — OPUS = MISTRAL LARGE 4 (Le Chonk, publieke API-preview).
+            #   Bewust gekozen keuze-model voor reviewwerk/tweede mening; GEEN
+            #   [1m]-suffix (512K-context, Anthropic-route niet nodig). De rest
+            #   blijft DeepSeek Flash; Fable blijft GLM 5.2 (OpenRouter).
+            #   Terugdraaien = deze regel weer op deepseek-flash zetten.
+            opus="mistral-large-4"; sonnet="deepseek-flash"
+            # 29 sep 2026 — OPTIE C: gesplitst.
+            #   haiku  = achtergrondtaken (websearch, titels) → DeepSeek. Was GLM 5.2
+            #            via OpenRouter: ~8000 onzichtbare verzoeken = $50 in 24 dagen.
+            #   fable  = bewust kiesbaar via /model voor REVIEWWERK (andere ogen).
+            #            Alleen als je hem zelf aanzet, dus de kosten zijn zichtbaar.
+            haiku="deepseek-flash"
+            fable="z-ai/glm-5.2"
             subagent="deepseek-flash"   # zelfde model als de default-rij
             ;;
         ds|deepseek)
@@ -478,6 +485,17 @@ launch_smart() {
 
     export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
     export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+    # Vangnet (7 okt 2026): experimentele Claude-API-bèta's uitzetten voor
+    # third-party backends. Aanleiding: bèta `inline-tools-2026-09-15` —
+    # Claude Code stuurde tool_definition-blokken die DeepSeek niet kent,
+    # waardoor ELK bericht in zo'n sessie 422'de (sessie "Data facturen en
+    # offertes"). De primaire fix zit in de proxy (sanitizeInlineToolBlocks
+    # in model-proxy.js) en staat altijd aan; dit is het achtervang-net voor
+    # toekomstige bèta's die de proxy nog niet kent.
+    # LET OP bij aanzetten: dit zet óók MCP-tool-search uit — alle MCP-tools
+    # laden dan upfront in elk verzoek (meer tokens/kosten per request).
+    # Alleen aanzetten als de proxy-patch iets mist:
+    #   export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
     # Default-rij = flash (1M-context). Sinds 10 sep 2026 heet dat model
     # officieel `deepseek-flash` (V4.1 Flash); de oude naam werkt nog als
     # legacy-alias. ANTHROPIC_MODEL wint bij opstart óók van een
