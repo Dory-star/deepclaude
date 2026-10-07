@@ -44,6 +44,10 @@ er een proxy tussen zit.
 - **Vereist `MISTRAL_API_KEY` in de omgeving van het proxy-proces.** Een
   handmatige herstart moet dus vanuit een shell met `~/.zshrc` gebeuren,
   anders wordt de route stil overgeslagen (fallback → luide DeepSeek-fout).
+- **Maandtegoed (bevestigd 7 okt 2026):** het Pro-abonnement bevat
+  **€25,50 API-tegoed per kalendermaand** (reset op de 1e van de maand), los
+  van het "Vibe Code"-tegoed (€255). Pay-as-you-go staat uit. Check:
+  console.mistral.ai → Abonnement.
 - Kosten: preview-tarief $0,68/$2,09 per M (≈2 weken), daarna $1,36/$4,18 —
   pas de `mistral`-regel in `PRICING_PER_M` (model-proxy.js) daarna aan.
 - Terugdraaien: `opus="deepseek-flash"` in `resolve_backend()` (smart-tak).
@@ -147,7 +151,8 @@ De Default-rij wordt ingesteld met `ANTHROPIC_MODEL`, in `launch_smart`:
 set_model_env "deepseek-flash[1m]"
 ```
 
-- Dit wint bij opstart óók van een `"model"`-pin in settings.json.
+- Dit wint bij opstart óók van een `"model"`-pin in settings.json — maar
+  alléén in deze smart-tak (zie de pin-valkuil onder "Cosmetische kant").
 - De andere launches (`-b ds`, `-b or`, `--remote`) geven `set_model_env ""`
   mee: geen override, dan geldt gewoon de Sonnet-slot als default.
 - Let op de label-quirk (zie hieronder): het label van de Default-rij toont
@@ -165,13 +170,22 @@ set_model_env "deepseek-flash[1m]"
    Vertrouw bij twijfel op het ✔-vinkje en de proxy-log, niet op dat label.
 3. **settings.json kan de boel "vervuild" achterlaten.** In `/model`:
    - **Enter** = model opslaan als je standaard voor nieuwe sessies → schrijft
-     een `"model"`-pin in `~/.claude/settings.json`.
+     een `"model"`-pin in `~/.claude/settings.json` ("Kept model as …").
    - **`s`** = alleen deze sessie (wél doen).
    - Een pin in settings.json wint van de slots bij de eerstvolgende start —
-     behalve als `ANTHROPIC_MODEL` is gezet (smart-mode; zie hierboven).
-     Vandaar dat `/model` meldt "applies on restart" of juist niet.
+     **behalve in smart-modus**: daar wint `ANTHROPIC_MODEL` (herbevestigd
+     7 okt 2026: pin=`opus`/mistral-large-4 → verse start tóch op
+     `deepseek-flash`). In `-b ds`/`-b or`/`-b fw` is er géén
+     `ANTHROPIC_MODEL` en wint de pin dus wél.
+   - Opruimen: `jq 'del(.model)' ~/.claude/settings.json` (7 okt 2026 gedaan;
+     er stond een "haiku"-pin van een Enter-druk).
+   - Claude Code 2.1.293 toont `ANTHROPIC_MODEL` als extra rij
+     **"Custom model"** (onderaan, met ✔) — dat is de rij die smart-start
+     écht draait; de Opus-rij erboven is alleen de Mistral-slot.
    - Escape om alles te omzeilen: start één keer met
-     `deepclaude -- --model deepseek-flash[1m]` (of via `/model` daarna).
+     `deepclaude --model deepseek-flash[1m]` (of via `/model` daarna).
+     Let op: géén `--` ertussen — deepclaude.sh geeft onbekende args
+     ongewijzigd door aan `claude`, en `--` belandt dan ín de prompt.
 4. **De `[1m]` in de rijnaam is normaal.** Claude Code plakt dat suffix zelf
    achter onbekende modellen; het hoort bij het 1M-mechanisme en wordt vóór
    het versturen weer gestript (door de CLI én door de proxy).
