@@ -529,6 +529,15 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 const headers = { ...clientReq.headers, host: dest.host };
                 delete headers['content-length'];
 
+                // Vraag de upstream om een ONGECOMPRIMEERD antwoord. Claude Code draait op Bun en adverteert standaard
+                // `accept-encoding: gzip, deflate, br, zstd`; die header ging hiervoor ongewijzigd mee. Kwam er dan een
+                // gecomprimeerd antwoord terug, dan verminkte UsageNormalizer (chunk.toString() op regel ~68) de bytes
+                // terwijl content-encoding bleef staan -> de client faalt met "Decompression error:
+                // ZstdDecompressionError" (rode balk). Alleen voor model-calls; anthropic-mode blijft transparant.
+                // Dit is dezelfde reparatie die de upstream-auteur in a7814ba (9 mei 2026) al had gemaakt en die in deze
+                // tak ontbrak.
+                if (isModelCall) headers['accept-encoding'] = 'identity';
+
                 // De inline-tools-bèta en zijn body-blokken zijn een paar: de
                 // blokken worden hieronder geconverteerd, dus deze bèta-token
                 // gaat er ook uit (een strikte backend kan anders alsnog
