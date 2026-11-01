@@ -207,7 +207,8 @@ const INLINE_TOOLS_BETA_PREFIX = 'inline-tools';
  * hielp niet — de validatie gebeurt vóór modelkeuze).
  *
  * Aanpak (bewust smal, net als sanitizeToolSchemas hierboven):
- *  - elk tool_addition/tool_removal-blok waarvan `tool.type` niet
+ *  - elk tool_removal-blok wordt gedropt (DeepSeek kent die variant niet);
+ *  - elk tool_addition-blok waarvan `tool.type` niet
  *    `tool_reference` is (tool_definition, mcp_toolset_reference, …) wordt
  *    geconverteerd naar tool_reference als de toolnaam in body.tools staat;
  *  - anders: blok droppen (die ene tool is dan mid-sessie niet beschikbaar —
@@ -232,7 +233,17 @@ export function sanitizeInlineToolBlocks(body) {
         let changed = false;
         const content = [];
         for (const block of msg.content) {
-            const isToolChange = block?.type === 'tool_addition' || block?.type === 'tool_removal';
+            // tool_removal: DeepSeek's endpoint kent dit variant helemaal niet
+            // (1 nov 2026: 422 "unknown variant `tool_removal`, expected one of
+            // text, image, … tool_addition"), ook niet met een tool_reference
+            // erin. Altijd droppen: het model hoeft niet te weten dat een tool
+            // verdween; de tools[]-lijst is toch al actueel.
+            if (block?.type === 'tool_removal') {
+                changed = true;
+                result.dropped++;
+                continue;
+            }
+            const isToolChange = block?.type === 'tool_addition';
             const tool = block?.tool;
             if (!isToolChange || tool?.type === 'tool_reference') {
                 content.push(block);

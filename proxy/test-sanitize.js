@@ -98,20 +98,43 @@ test('body zonder tool-blokken blijft dezelfde array-referentie houden', () => {
     assert.equal(body.messages, messages, 'geen onnodige kopie');
 });
 
-test('tool_removal met tool_definition wordt ook geconverteerd', () => {
+test('tool_removal (met tool_definition) wordt gedropt', () => {
     const body = {
         tools: [{ name: 'mcp__x__echo' }],
-        messages: [{
-            role: 'system',
-            content: [{ type: 'tool_removal', tool: { type: 'tool_definition', definition: { name: 'mcp__x__echo' } } }],
-        }],
+        messages: [
+            { role: 'user', content: [{ type: 'text', text: 'x' }] },
+            { role: 'system', content: [{ type: 'tool_removal', tool: { type: 'tool_definition', definition: { name: 'mcp__x__echo' } } }] },
+        ],
     };
     const r = sanitizeInlineToolBlocks(body);
-    assert.deepEqual(r, { converted: 1, dropped: 0 });
-    assert.deepEqual(body.messages[0].content[0], {
-        type: 'tool_removal',
-        tool: { type: 'tool_reference', name: 'mcp__x__echo' },
-    });
+    assert.deepEqual(r, { converted: 0, dropped: 1 });
+    assert.equal(body.messages.length, 1, 'leeg systeembericht moet weg zijn');
+});
+
+test('tool_removal met tool_reference wordt óók gedropt (1 nov 2026: 422 op messages[116])', () => {
+    const body = {
+        tools: [{ name: 'mcp__x__echo' }],
+        messages: [
+            { role: 'user', content: [{ type: 'text', text: 'x' }] },
+            { role: 'system', content: [
+                { type: 'tool_removal', tool: { type: 'tool_reference', name: 'mcp__x__echo' } },
+                { type: 'tool_addition', tool: { type: 'tool_reference', name: 'mcp__x__echo' } },
+            ] },
+        ],
+    };
+    const r = sanitizeInlineToolBlocks(body);
+    assert.deepEqual(r, { converted: 0, dropped: 1 });
+    assert.deepEqual(body.messages[1].content, [
+        { type: 'tool_addition', tool: { type: 'tool_reference', name: 'mcp__x__echo' } },
+    ], 'tool_addition met tool_reference blijft staan');
+    assert.ok(!JSON.stringify(body).includes('tool_removal'));
+});
+
+test('tool_removal in kale vorm (zonder tool-veld) wordt gedropt', () => {
+    const body = { messages: [{ role: 'system', content: [{ type: 'tool_removal', name: 'x' }] }] };
+    const r = sanitizeInlineToolBlocks(body);
+    assert.deepEqual(r, { converted: 0, dropped: 1 });
+    assert.equal(body.messages.length, 0);
 });
 
 test('onbekende tool-variant (mcp_toolset_reference) zonder naam wordt gedropt', () => {
