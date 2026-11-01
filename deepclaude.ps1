@@ -201,7 +201,8 @@ if ($Remote) {
     $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $p.sonnet
     $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $p.haiku
     $env:CLAUDE_CODE_SUBAGENT_MODEL = $p.subagent
-    $env:CLAUDE_CODE_EFFORT_LEVEL = "max"
+    # Effort niet meer forceren (stond hier: $env:CLAUDE_CODE_EFFORT_LEVEL = "max").
+    # Dat overrulete /effort en settings.json. Niveau komt nu uit settings.json.
     Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
 
@@ -244,7 +245,7 @@ $env:ANTHROPIC_DEFAULT_OPUS_MODEL = $p.opus
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $p.sonnet
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $p.haiku
 $env:CLAUDE_CODE_SUBAGENT_MODEL = $p.subagent
-$env:CLAUDE_CODE_EFFORT_LEVEL = "max"
+# Effort niet meer forceren (stond hier: $env:CLAUDE_CODE_EFFORT_LEVEL = "max").
 Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
 
 & claude @Args

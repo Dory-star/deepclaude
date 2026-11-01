@@ -164,7 +164,11 @@ set_model_env() {
     export CLAUDE_CODE_SUBAGENT_MODEL="$m"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$RESOLVED_HAIKU"
     export ANTHROPIC_DEFAULT_FABLE_MODEL="$RESOLVED_FABLE"
-    export CLAUDE_CODE_EFFORT_LEVEL="max"
+    # Effort wordt niet meer geforceerd. Eerder stond hier:
+    #   export CLAUDE_CODE_EFFORT_LEVEL="max"
+    # Dat overrulete /effort en settings.json in elke DeepClaude-sessie.
+    # Niveau komt nu uit settings.json (modelSettings) en is per sessie
+    # aanpasbaar met /effort. Wil je toch forceren: export de var zelf.
     if [[ -n "${1:-}" ]]; then
         export ANTHROPIC_MODEL="$1"
     else
