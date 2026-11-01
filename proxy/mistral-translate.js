@@ -7,11 +7,11 @@
  * dus alles moet hier heen en terug vertaald worden.
  *
  * Ontwerpkeuzes (gebaseerd op onderzoek 7 okt 2026 + eigen probes):
- *  - `reasoning_effort: "none"` als standaard: bewezen dat Mistral Large 4 dan
- *    platte-tekst-content teruggeeft (geen denk-blokken-array), tools en
- *    streaming gewoon werken. Dat vermijdt de hele klasse problemen rond
- *    Anthropic thinking-blokken (signature-verplichting e.d.).
- *    Content-in-array-vorm wordt defensief alsnog geparseerd.
+ *  - `reasoning_effort: "low"` als standaard. Tot eind okt 2026 was dat "none"
+ *    (platte tekst, geen denk-blokken), maar Mistral weigert "none" inmiddels
+ *    met 400 code 3051; toegestaan zijn high/low/medium. "low" is de
+ *    dichtstbijzijnde vervanger. Denk-blokken in de content-array worden
+ *    overgeslagen, tekst wordt eruit gehaald (messageTextOf).
  *  - Nooit `cache_control`/`thinking`/`output_config` e.d. naar Mistral: die
  *    geven daar 422's ("extra_forbidden").
  *  - Nooit eerder ontvangen reasoning terugsturen in de geschiedenis: idem 422
@@ -92,7 +92,8 @@ function safeParseJson(s) {
  * output_config, cache_control, metadata, top_k …) valt daarmee automatisch af.
  */
 export function toMistralRequest(anthropic, opts = {}) {
-    const reasoningEffort = opts.reasoningEffort || 'none';
+    const rawEffort = (opts.reasoningEffort || 'low').toLowerCase();
+    const reasoningEffort = rawEffort === 'none' ? 'low' : rawEffort;
     const out = {
         model: opts.model || anthropic.model,
         stream: !!anthropic.stream,

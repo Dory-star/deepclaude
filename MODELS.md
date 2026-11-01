@@ -38,8 +38,9 @@ er een proxy tussen zit.
 - Mistral praat géén Anthropic-formaat: verzoek/antwoord worden vertaald in
   `proxy/mistral-translate.js` (route-flag `translate: 'mistral'`). Zie ook de
   wire-patches-tabel in `proxy/README.md`.
-- **Standaard `reasoning_effort: "none"`** (bewezen: platte tekst, tools en
-  streaming werken; 6x minder output-tokens dan "high"). Aanzetten kan met
+- **Standaard `reasoning_effort: "low"`** (31 okt 2026; tot dan "none", dat
+  Mistral nu weigert met 400 code 3051 — toegestaan zijn high/low/medium; een
+  oude `none`-waarde wordt in de proxy automatisch "low"). Hoger zetten kan met
   `MISTRAL_REASONING_EFFORT=high` in de omgeving vóór het starten van de proxy.
 - **Vereist `MISTRAL_API_KEY` in de omgeving van het proxy-proces.** Een
   handmatige herstart moet dus vanuit een shell met `~/.zshrc` gebeuren,

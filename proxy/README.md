@@ -62,5 +62,7 @@ bidirectioneel omgezet — inclusief SSE-streaming (volledige Anthropic-
 eventreeks + pings), tool_use/tool_result-koppeling, id-sanitizing en het
 strippen van Anthropic-eigen velden (`cache_control`, `thinking`,
 `output_config`) die Mistral met 422 weigert. Standaard
-`reasoning_effort: "none"` (platte tekst; `high` kan via env).
+`reasoning_effort: "low"`; `high`/`medium` kan via env. Let op: `"none"` werd
+tot eind okt 2026 gebruikt maar wordt door Mistral nu geweigerd (400, code
+3051) — de proxy mapt die waarde automatisch naar `"low"`.
 Tests: `node proxy/test-mistral-translate.js`.

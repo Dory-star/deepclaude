@@ -606,9 +606,19 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                     try {
                         const p = JSON.parse(body);
                         if (translateKind === 'mistral') {
+                            // Mistral accepteert sinds eind okt 2026 geen "none" meer
+                            // (400 code 3051; alleen high/low/medium). "low" is de
+                            // dichtstbijzijnde vervanger; oude env-waarde "none" mappen
+                            // we zodat bestaande shells niet opnieuw breken.
+                            const rawEffort = (process.env.MISTRAL_REASONING_EFFORT || 'low').toLowerCase();
+                            const reasoningEffort = rawEffort === 'none' ? 'low' : rawEffort;
+                            if (rawEffort === 'none' && !globalThis.__mistralNoneWarned) {
+                                globalThis.__mistralNoneWarned = true;
+                                console.log('[MODEL-PROXY] MISTRAL_REASONING_EFFORT=none wordt niet meer geaccepteerd door Mistral — gebruik "low" (nu automatisch omgezet)');
+                            }
                             const m = toMistralRequest(p, {
                                 model: p.model,
-                                reasoningEffort: process.env.MISTRAL_REASONING_EFFORT || 'none',
+                                reasoningEffort,
                             });
                             body = Buffer.from(JSON.stringify(m));
                             console.log(`[MODEL-PROXY] #${reqId} mistral-vertaling (${m.messages?.length || 0} berichten, ${m.tools?.length || 0} tools, reasoning=${m.reasoning_effort || 'off'})`);

@@ -24,7 +24,7 @@ function parseEvents(s) {
 
 console.log('toMistralRequest');
 
-test('basis: tekst, stream, max_tokens, reasoning_effort=none', () => {
+test('basis: tekst, stream, max_tokens, reasoning_effort=low (none is uitgefaseerd)', () => {
     const out = toMistralRequest({
         model: 'mistral-large-4', max_tokens: 100, stream: true,
         messages: [{ role: 'user', content: 'hoi' }],
@@ -32,7 +32,7 @@ test('basis: tekst, stream, max_tokens, reasoning_effort=none', () => {
     assert.equal(out.model, 'mistral-large-4');
     assert.equal(out.stream, true);
     assert.equal(out.max_tokens, 100);
-    assert.equal(out.reasoning_effort, 'none');
+    assert.equal(out.reasoning_effort, 'low');
     assert.deepEqual(out.messages, [{ role: 'user', content: 'hoi' }]);
 });
 
