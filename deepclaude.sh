@@ -379,12 +379,58 @@ launch_claude() {
     echo "  Model: $RESOLVED_SONNET (main) | via /model: $RESOLVED_OPUS | subagents: $RESOLVED_SUBAGENT"
     echo ""
 
-    export ANTHROPIC_BASE_URL="$RESOLVED_URL"
-    export ANTHROPIC_AUTH_TOKEN="$RESOLVED_KEY"
-    set_model_env ""   # geen ANTHROPIC_MODEL-override: sonnet-slot is de default
-    unset ANTHROPIC_API_KEY
+    # Sinds 6 nov 2026 loopt ook deze route via een proxy (eigen instantie,
+    # eigen poort), niet meer rechtstreeks naar RESOLVED_URL.
+    # Aanleiding: sessie "Google drive backup op server" (gestart met
+    # `deepclaude --backend ds`) kreeg bij elk bericht
+    #   422 … messages[1].content: unknown variant `tool_definition`,
+    #   expected `tool_reference`
+    # Claude Code stuurt tools van claude.ai-connectors (bv.
+    # mcp__claude_ai_Claude_Docs__*) als inline tool_addition/tool_definition-
+    # blok; DeepSeek kent alleen de tool_reference-variant. De fix daarvoor
+    # (sanitizeInlineToolBlocks in proxy/model-proxy.js) zat wél in de
+    # smart-proxy, maar deze directe route ging er langsheen. Bewezen met het
+    # echte payload uit dat transcript: 3 tool_definition-blokken → 0.
+    local proxy_backend
+    case "$BACKEND" in
+        ds|deepseek)   proxy_backend="deepseek" ;;
+        or|openrouter) proxy_backend="openrouter" ;;
+        fw|fireworks)  proxy_backend="fireworks" ;;
+        *)             proxy_backend="$BACKEND" ;;
+    esac
+    echo "  Starting model proxy for $proxy_backend..."
 
-    exec claude "$@"
+    # Standalone modus (--mode/--port-file): die schrijft de poort exact in het
+    # port-file; de legacy-vorm (url+key als positionals) zet de poort op stdout
+    # tussen de logregels, waardoor `head -1` de logregel als poort pakte.
+    local port_file
+    port_file=$(mktemp)
+    node "$SCRIPT_DIR/proxy/start-proxy.js" --mode "$proxy_backend" --port-file "$port_file" \
+        >> /tmp/deepclaude-proxy.log 2>&1 &
+    PROXY_PID=$!
+
+    local tries=0
+    while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
+        sleep 0.2
+        tries=$((tries + 1))
+    done
+
+    if [[ ! -s "$port_file" ]]; then
+        echo "ERROR: Proxy failed to start" >&2
+        rm -f "$port_file"
+        exit 1
+    fi
+
+    local proxy_port
+    proxy_port=$(cat "$port_file")
+    rm -f "$port_file"
+
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
+    set_model_env ""   # geen ANTHROPIC_MODEL-override: sonnet-slot is de default
+    unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+
+    # Geen exec: de EXIT-trap moet deze proxy opruimen als de sessie stopt.
+    claude "$@"
 }
 
 launch_remote() {
@@ -399,11 +445,23 @@ launch_remote() {
 
     resolve_backend
 
-    echo "  Starting model proxy for $BACKEND..."
+    # Zelfde opzet als launch_claude: standalone modus met --mode/--port-file
+    # schrijft de poort exact weg. De oude legacy-vorm zette de poort op stdout
+    # tussen de logregels, waardoor `head -1` de logregel als poort las en
+    # ANTHROPIC_BASE_URL onbruikbaar werd. Zie ook de guard in start-proxy.js.
+    local proxy_backend
+    case "$BACKEND" in
+        ds|deepseek)   proxy_backend="deepseek" ;;
+        or|openrouter) proxy_backend="openrouter" ;;
+        fw|fireworks)  proxy_backend="fireworks" ;;
+        *)             proxy_backend="$BACKEND" ;;
+    esac
+    echo "  Starting model proxy for $proxy_backend..."
 
     local port_file
     port_file=$(mktemp)
-    node "$SCRIPT_DIR/proxy/start-proxy.js" "$RESOLVED_URL" "$RESOLVED_KEY" > "$port_file" &
+    node "$SCRIPT_DIR/proxy/start-proxy.js" --mode "$proxy_backend" --port-file "$port_file" \
+        >> /tmp/deepclaude-proxy.log 2>&1 &
     PROXY_PID=$!
 
     local tries=0

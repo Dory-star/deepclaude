@@ -35,7 +35,13 @@ function loadBackends() {
     return backends;
 }
 
-if (targetUrl && apiKey && !dispatchFlag) {
+// Let op: alleen échte positionals gelden als legacy url+key. Zonder deze
+// guard werd bij `--mode deepseek --port-file …` "--mode" als targetUrl en
+// "deepseek" als apiKey gelezen → new URL('--mode') → ERR_INVALID_URL, waardoor
+// de standalone-modus (met --port/--mode) onbereikbaar was.
+const legacyMode = targetUrl && apiKey && !dispatchFlag && !targetUrl.startsWith('--');
+
+if (legacyMode) {
     // Legacy single-backend mode: backends from env (for live toggle), target
     // from positionals. Prints the bare port on stdout (deepclaude.sh reads it).
     const backends = loadBackends();
