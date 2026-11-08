@@ -1,22 +1,24 @@
 #!/bin/bash
 # wissel - zet een Claude Code-sessie door naar een ander model of een andere aanbieder.
 #
-#   wissel <anthropic|deepclaude|byteplus> [model] [--sessie ID] [--schoon] [--geen-fork] [-- claude-argumenten]
+#   wissel <anthropic|deepclaude|byteplus> [model] [--sessie ID] [--nieuwste] [--schoon] [--geen-fork] [-- claude-argumenten]
 #
-# Standaard: de nieuwste sessie in de huidige map, hervat via `--resume <id> --fork-session`.
-# --fork-session maakt een nieuw sessie-id, dus de oorspronkelijke sessie blijft onaangetast.
-# Het juiste model/omgeving voor het doel wordt hier ingesteld (een sessie onthoudt anders
-# het model van de vorige keer, en dan zegt Anthropic "issue with the selected model").
+# Interactief (zonder --sessie): Claude Code toont zijn eigen keuzescherm van /resume voor de huidige
+# map, zodat je zelf de juiste sessie kiest. Hervat wordt met --fork-session: nieuw sessie-id, dus
+# de oorspronkelijke sessie blijft onaangetast. Het juiste model/omgeving voor het doel wordt hier
+# ingesteld (een sessie onthoudt anders het model van de vorige keer, en dan zegt Anthropic
+# "issue with the selected model").
 #
 # Doelen:
-#   anthropic   gewone claude op het Anthropic-abonnement   (model standaard: sonnet)
-#   deepclaude  deepclaude (smart-modus, via de proxy)       (model: laat DeepClaude kiezen)
-#   byteplus    ~/byteplus-claude.sh, Coding Plan, geen proxy (model standaard: dola-seed-2.0-pro)
+#   anthropic   gewone claude op het Anthropic-abonnement (model: je eigen "model" uit settings.json, anders sonnet)
+#   deepclaude  deepclaude, smart-modus via de proxy       (model: laat DeepClaude kiezen)
+#   byteplus    ~/byteplus-claude.sh, Coding Plan, geen proxy (model standaard dola-seed-2.0-pro)
 # Opties:
-#   --sessie ID    een bepaalde sessie in plaats van de nieuwste
+#   --sessie ID    een bepaalde sessie (geen keuzescherm)
+#   --nieuwste     niet het keuzescherm, maar de nieuwste sessie van de map (de titel staat in de melding)
 #   --schoon       eerst een opgeschoonde kopie maken (schoon.py) en die hervatten; noodoptie
 #   --geen-fork    hervat dezelfde sessie zonder nieuw id (het origineel wordt dan aangevuld)
-#   --             alles erna gaat ongewijzigd naar claude (bijv. -p "vraag" voor een proef)
+#   --             alles erna gaat ongewijzigd naar claude (bijv. -p "vraag" voor een proef; kiest dan de nieuwste)
 # Elke wissel schrijft een regel (geen inhoud) naar sessie-wissel/wissels.log.
 
 set -uo pipefail
@@ -30,7 +32,7 @@ HERE="$(cd "$(dirname "$BRON")" && pwd)"
 SCHOON="$HERE/schoon.py"
 LOG="$HERE/wissels.log"
 
-gebruik() { sed -n '2,22p' "$BRON" | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
+gebruik() { sed -n '2,26p' "$BRON" | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
 
 doel="${1:-}"
 [ -z "$doel" ] && gebruik 2
@@ -42,10 +44,11 @@ esac
 
 model=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]]; then model="$1"; shift; fi
-sessie=""; fork=1; schoonmaken=0; extra=()
+sessie=""; fork=1; schoonmaken=0; nieuwste=0; extra=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --sessie)    sessie="${2:-}"; [ -z "$sessie" ] && { echo "--sessie vraagt een id" >&2; exit 2; }; shift 2 ;;
+        --nieuwste)  nieuwste=1; shift ;;
         --geen-fork) fork=0; shift ;;
         --schoon)    schoonmaken=1; shift ;;
         --)          shift; extra=("$@"); break ;;
@@ -53,30 +56,45 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Welke sessie? (laatste model, leeftijd en aantal regels gaan alleen naar het logboek)
-if ! gegevens="$(python3 -I "$SCHOON" --info ${sessie:+"$sessie"} 2>&1)"; then
-    echo "Geen sessie gevonden in $(pwd): $gegevens" >&2; exit 1
-fi
-IFS=$'\t' read -r sid van_model leeftijd regels <<< "$gegevens"
+# Headless (-p/--print) heeft geen keuzescherm: dan altijd de nieuwste sessie.
+headless=0
+for a in ${extra[@]+"${extra[@]}"}; do case "$a" in -p|--print) headless=1 ;; esac; done
 
-if [ "$schoonmaken" = 1 ]; then
-    uit="$(python3 -I "$SCHOON" --sessie "$sid" --doel "$doel")" || { echo "Schoonmaken mislukt." >&2; exit 1; }
-    nieuw="$(printf '%s\n' "$uit" | awk '/^kopie:/{print $2}')"
-    [ -z "$nieuw" ] && { echo "Geen kopie gemaakt." >&2; exit 1; }
-    echo "wissel: opgeschoonde kopie $nieuw gemaakt van $sid" >&2
-    sid="$nieuw"; fork=0
-fi
+# Keuzescherm gebruiken? Alleen interactief, zonder --sessie/--nieuwste en zonder --schoon (dat heeft een id nodig).
+keuzescherm=0
+if [ -z "$sessie" ] && [ "$nieuwste" = 0 ] && [ "$headless" = 0 ] && [ "$schoonmaken" = 0 ]; then keuzescherm=1; fi
 
-hervat=(--resume "$sid")
-[ "$fork" = 1 ] && hervat+=(--fork-session)
-echo "wissel: $van_model -> $doel${model:+ ($model)} | sessie $sid | ${leeftijd}u oud, $regels regels" >&2
+if [ "$keuzescherm" = 1 ]; then
+    sid="(keuzescherm)"; van_model="?"; leeftijd="?"; regels="?"
+    hervat=(--resume)
+    [ "$fork" = 1 ] && hervat+=(--fork-session)
+    echo "wissel: -> $doel${model:+ ($model)} | kies hieronder de sessie" >&2
+else
+    if ! gegevens="$(python3 -I "$SCHOON" --info ${sessie:+"$sessie"} 2>&1)"; then
+        echo "Geen sessie gevonden in $(pwd): $gegevens" >&2; exit 1
+    fi
+    IFS=$'\t' read -r sid van_model leeftijd regels titel <<< "$gegevens"
+
+    if [ "$schoonmaken" = 1 ]; then
+        uit="$(python3 -I "$SCHOON" --sessie "$sid" --doel "$doel")" || { echo "Schoonmaken mislukt." >&2; exit 1; }
+        nieuw="$(printf '%s\n' "$uit" | awk '/^kopie:/{print $2}')"
+        [ -z "$nieuw" ] && { echo "Geen kopie gemaakt." >&2; exit 1; }
+        echo "wissel: opgeschoonde kopie $nieuw gemaakt van $sid" >&2
+        sid="$nieuw"; fork=0
+    fi
+    hervat=(--resume "$sid")
+    [ "$fork" = 1 ] && hervat+=(--fork-session)
+    echo "wissel: $van_model -> $doel${model:+ ($model)} | sessie $sid | ${leeftijd}u oud, $regels regels | titel: ${titel:-(geen)}" >&2
+fi
 
 case "$doel" in
     anthropic)
+        # Eigen standaardmodel uit settings.json volgen, anders sonnet; nooit stilletjes iets anders kiezen.
+        eigen="$(python3 -I -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("model",""))' 2>/dev/null)"
         env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_MODEL \
             -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL \
             -u ANTHROPIC_DEFAULT_FABLE_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
-            claude --model "${model:-sonnet}" "${hervat[@]}" ${extra[@]+"${extra[@]}"}
+            claude --model "${model:-${eigen:-sonnet}}" "${hervat[@]}" ${extra[@]+"${extra[@]}"}
         rc=$? ;;
     deepclaude)
         dc="$(command -v deepclaude || echo "$HOME/deepclaude/deepclaude.sh")"

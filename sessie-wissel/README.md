@@ -14,8 +14,13 @@ wissel byteplus glm-5.2     # ander model op hetzelfde doel
 wissel anthropic opus --sessie <id>   # een bepaalde sessie in plaats van de nieuwste
 ```
 
-Dit hervat de nieuwste sessie van de map met `--resume <id> --fork-session`: je krijgt een nieuw
-sessie-id en de oorspronkelijke sessie blijft onaangetast. Het script zet ook het juiste model en de
+Interactief toont Claude Code zijn eigen keuzescherm (zoals `/resume`) voor de huidige map, zodat je zelf
+de juiste sessie kiest; dat het scherm samen met `--fork-session` werkt is volgens `claude --help`
+bedoeld maar **niet in een echte terminal door mij geprobeerd**. Wil je liever de nieuwste sessie, gebruik
+`--nieuwste` (de titel staat dan in de melding, zodat je kunt zien of het de goede is). Headless
+(`-- -p ...`) kiest altijd de nieuwste. Hervat wordt met `--resume --fork-session`: je krijgt een nieuw
+sessie-id en de oorspronkelijke sessie blijft onaangetast. Het Anthropic-model is je eigen `model` uit
+`~/.claude/settings.json` (nu `sonnet`), anders sonnet. Het script zet ook het juiste model en de
 juiste omgeving. Dat laatste is belangrijk: een sessie onthoudt het model van de vorige keer, en
 Anthropic antwoordt dan "issue with the selected model (deepseek-flash[1m])".
 

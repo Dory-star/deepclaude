@@ -229,10 +229,18 @@ def controleer(pad):
 
 def info(src):
     """Kerngegevens van een sessie voor het wissel-logboek (geen inhoud): id, laatste model, leeftijd, regels."""
-    model, regels = "onbekend", 0
+    model, regels, titel = "onbekend", 0, ""
     with open(src, encoding="utf-8", errors="replace") as f:
         for regel in f:
             regels += 1
+            if '"ai-title"' in regel:
+                try:
+                    o = json.loads(regel)
+                    if o.get("type") == "ai-title" and o.get("aiTitle"):
+                        titel = " ".join(str(o["aiTitle"]).split())[:70]
+                except ValueError:
+                    pass
+                continue
             if '"assistant"' not in regel or '"model"' not in regel:
                 continue
             try:
@@ -243,14 +251,14 @@ def info(src):
             if o.get("type") == "assistant" and m and m != "<synthetic>":
                 model = m
     uren = (datetime.datetime.now().timestamp() - os.path.getmtime(src)) / 3600.0
-    return os.path.basename(src)[:-6], model, round(uren, 1), regels
+    return os.path.basename(src)[:-6], model, round(uren, 1), regels, titel
 
 
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "--info":
-        # schoon.py --info [ID|PAD]  ->  id<TAB>model<TAB>leeftijd_uur<TAB>regels
+        # schoon.py --info [ID|PAD]  ->  id<TAB>model<TAB>leeftijd_uur<TAB>regels<TAB>titel
         src = vind_sessie(argv[1] if len(argv) > 1 else None, projectmap())
         print("\t".join(str(x) for x in info(src)))
         return 0
