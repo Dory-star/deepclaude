@@ -260,3 +260,10 @@ Doorgevoerd op 10 sep. Wat er is gebeurd:
 hernoemen zonder de oude naam meteen te killen. Check bij twijfel altijd
 `curl -s https://api.deepseek.com/models` en het `model`-veld in de respons,
 niet de documentatie alleen.
+
+## Sessie doorzetten naar een ander model (9 nov 2026)
+
+Een Claude Code-sessie hervatten op een ander doel (Anthropic / DeepClaude / BytePlus) gaat met
+`wissel <doel>` (symlink in /usr/local/bin). Zie `sessie-wissel/README.md`. Kern: `--resume <id>
+--fork-session` plus het juiste model per doel, omdat een sessie anders het model van de vorige keer
+onthoudt ("issue with the selected model"). Regressietest na een Claude Code-update: `sessie-wissel/rondreis.sh`.
