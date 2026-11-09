@@ -16,6 +16,7 @@
 # Opties:
 #   --sessie ID    een bepaalde sessie (geen keuzescherm)
 #   --nieuwste     niet het keuzescherm, maar de nieuwste sessie van de map (de titel staat in de melding)
+#   --kies         bij byteplus toch het keuzescherm (standaard de nieuwste, zodat vooraf op filterwoorden gecontroleerd kan worden)
 #   --venster      open een nieuw Terminal-venster met deze lopende sessie (voor de slash-command /wissel)
 #   --schoon       eerst een opgeschoonde kopie maken (schoon.py) en die hervatten; noodoptie
 #   --geen-fork    hervat dezelfde sessie zonder nieuw id (het origineel wordt dan aangevuld)
@@ -33,7 +34,7 @@ HERE="$(cd "$(dirname "$BRON")" && pwd)"
 SCHOON="$HERE/schoon.py"
 LOG="$HERE/wissels.log"
 
-gebruik() { sed -n '2,27p' "$BRON" | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
+gebruik() { sed -n '2,28p' "$BRON" | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
 
 doel="${1:-}"
 [ -z "$doel" ] && gebruik 2
@@ -45,11 +46,12 @@ esac
 
 model=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]]; then model="$1"; shift; fi
-sessie=""; fork=1; schoonmaken=0; nieuwste=0; venster=0; extra=()
+sessie=""; fork=1; schoonmaken=0; nieuwste=0; venster=0; kies=0; extra=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --sessie)    sessie="${2:-}"; [ -z "$sessie" ] && { echo "--sessie vraagt een id" >&2; exit 2; }; shift 2 ;;
         --nieuwste)  nieuwste=1; shift ;;
+        --kies)      kies=1; shift ;;
         --venster)   venster=1; shift ;;
         --geen-fork) fork=0; shift ;;
         --schoon)    schoonmaken=1; shift ;;
@@ -88,6 +90,10 @@ for a in ${extra[@]+"${extra[@]}"}; do case "$a" in -p|--print) headless=1 ;; es
 # Keuzescherm gebruiken? Alleen interactief, zonder --sessie/--nieuwste en zonder --schoon (dat heeft een id nodig).
 keuzescherm=0
 if [ -z "$sessie" ] && [ "$nieuwste" = 0 ] && [ "$headless" = 0 ] && [ "$schoonmaken" = 0 ]; then keuzescherm=1; fi
+# BytePlus: het inhoudsfilter weigert bepaalde woorden in de geschiedenis (zie schoon.py, WOORDEN). Dat controleren
+# we vooraf op de gekozen sessie, en dat kan niet bij het keuzescherm: daarom standaard de nieuwste sessie
+# (met titel in de melding); --kies geeft het keuzescherm toch.
+if [ "$doel" = byteplus ] && [ "$kies" = 0 ]; then keuzescherm=0; fi
 
 if [ "$keuzescherm" = 1 ]; then
     sid="(keuzescherm)"; van_model="?"; leeftijd="?"; regels="?"
@@ -110,6 +116,16 @@ else
         [ -z "$nieuw" ] && { echo "Geen kopie gemaakt." >&2; exit 1; }
         echo "wissel: opgeschoonde kopie $nieuw gemaakt van $sid" >&2
         sid="$nieuw"; fork=0
+    fi
+    if [ "$doel" = byteplus ] && [ "$schoonmaken" = 0 ]; then
+        n="$(python3 -I "$SCHOON" --scan "$sid" 2>/dev/null || echo 0)"
+        if [ "${n:-0}" -gt 0 ]; then
+            uit="$(python3 -I "$SCHOON" --sessie "$sid" --regels woorden)" || { echo "Schoonmaken mislukt." >&2; exit 1; }
+            nieuw="$(printf '%s\n' "$uit" | awk '/^kopie:/{print $2}')"
+            [ -z "$nieuw" ] && { echo "Geen kopie gemaakt." >&2; exit 1; }
+            echo "wissel: $n woord(en) in een kopie vervangen (BytePlus weigert o.a. 'abbo'); kopie $nieuw" >&2
+            sid="$nieuw"; fork=0
+        fi
     fi
     hervat=(--resume "$sid")
     [ "$fork" = 1 ] && hervat+=(--fork-session)

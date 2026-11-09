@@ -139,6 +139,29 @@ class SchoonTests(unittest.TestCase):
         self.assertEqual(c["tool_use zonder tool_result"], 0)
         self.assertEqual(c["tool_result zonder tool_use"], 0)
 
+    def test_filterwoord_wordt_vervangen(self):
+        with open(self.src, "a") as f:
+            f.write(json.dumps({"type": "user", "uuid": "u9", "parentUuid": "a7", "sessionId": OUD,
+                                "message": {"role": "user", "content": "oke ik heb een 10 Abbo genomen, abbos blijven staan"}}) + "\n")
+        stats, rows, _ = self.draai({"woorden"})
+        tekst = json.dumps(rows[-1], ensure_ascii=False)
+        self.assertIn("10 abonnement genomen", tekst)
+        self.assertIn("abonnementen blijven staan", tekst)   # ook het meervoud
+        self.assertNotIn("Abbo ", tekst)
+        self.assertEqual(stats["woorden vervangen"], 2)
+        # alleen hele woorden: een ander woord dat met 'abbo' begint blijft staan
+        with open(self.src, "a") as f:
+            f.write(json.dumps({"type": "user", "uuid": "u10", "parentUuid": "u9", "sessionId": OUD,
+                                "message": {"role": "user", "content": "abbotsford en gabbo blijven"}}) + "\n")
+        _, rows2, _ = self.draai({"woorden"})
+        self.assertIn("abbotsford en gabbo blijven", json.dumps(rows2[-1], ensure_ascii=False))
+
+    def test_scan_telt_filterwoorden(self):
+        with open(self.src, "a") as f:
+            f.write(json.dumps({"type": "user", "uuid": "u9", "message": {"role": "user", "content": "abbo en ABBO"}}) + "\n")
+        telling = sum(len(p.findall(l)) for l in open(self.src) for p, _ in schoon.WOORDEN)
+        self.assertEqual(telling, 2)
+
     def test_onleesbare_regel_blijft_staan(self):
         with open(self.src, "a") as f:
             f.write("dit is geen json\n")

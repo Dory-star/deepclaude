@@ -30,9 +30,13 @@ DOELEN = {
     "ruw": set(),
     "anthropic": {"thinking", "pairs"},
     "deepclaude": {"thinking", "pairs"},
-    "byteplus": {"thinking", "toolblocks", "servertools", "pairs"},
+    "byteplus": {"thinking", "toolblocks", "servertools", "pairs", "woorden"},
 }
-ALLE_REGELS = {"thinking", "apireq", "toolblocks", "servertools", "pairs"}
+ALLE_REGELS = {"thinking", "apireq", "toolblocks", "servertools", "pairs", "woorden"}
+# Woorden die het inhoudsfilter van BytePlus ten onrechte laat weigeren (stop_reason=refusal, 0 tokens, ook op
+# alle latere berichten omdat het woord in de geschiedenis blijft staan). Gemeten 9 nov 2026: "abbo"
+# (Nederlands voor abonnement, in het Engels een scheldwoord) blokkeerde een hele sessie op elk model.
+WOORDEN = [(re.compile(r"(?i)\babbos\b"), "abonnementen"), (re.compile(r"(?i)\babbo\b"), "abonnement")]
 # Velden die naar een andere regel (uuid) verwijzen en dus meebewegen als die regel verdwijnt.
 VERWIJZINGEN = ("parentUuid", "leafUuid", "sourceToolAssistantUUID")
 BERICHT_TYPES = ("user", "assistant", "system", "api-request-blob")
@@ -150,6 +154,11 @@ def schoon(src, dst, regels, nieuw_id, nu=None):
             ruw = ruw.rstrip("\n")
             if not ruw.strip():
                 continue
+            if "woorden" in regels:
+                for patroon, vervanging in WOORDEN:
+                    ruw, aantal = patroon.subn(vervanging, ruw)
+                    if aantal:
+                        stats["woorden vervangen"] += aantal
             try:
                 o = json.loads(ruw)
             except ValueError:
@@ -263,6 +272,15 @@ def info(src):
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
+    if argv and argv[0] == "--scan":
+        # schoon.py --scan ID|PAD  ->  aantal woorden in de sessie die BytePlus ten onrechte weigert
+        src = vind_sessie(argv[1] if len(argv) > 1 else None, projectmap())
+        totaal = 0
+        with open(src, encoding="utf-8", errors="replace") as f:
+            for regel in f:
+                totaal += sum(len(p.findall(regel)) for p, _ in WOORDEN)
+        print(totaal)
+        return 0
     if argv and argv[0] == "--cwd":
         # schoon.py --cwd ID|PAD  ->  de werkmap waarin de sessie begon (uit de regels zelf)
         src = vind_sessie(argv[1] if len(argv) > 1 else None, projectmap())
