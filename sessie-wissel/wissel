@@ -66,7 +66,9 @@ if [ "$venster" = 1 ]; then
     if [ -z "$sessie" ]; then
         echo "wissel --venster: geen sessie-id bekend (alleen binnen een Claude-sessie, of geef --sessie)." >&2; exit 1
     fi
-    cmd="cd $(printf '%q' "$(pwd)") && $(printf '%q' "$BRON") $doel"
+    # Het nieuwe venster moet in de map starten waar de sessie BEGON (daar zoekt --resume), niet in mijn huidige map.
+    werkmap="$(python3 -I "$SCHOON" --cwd "$sessie")" || { echo "wissel: $werkmap" >&2; exit 1; }
+    cmd="cd $(printf '%q' "$werkmap") && $(printf '%q' "$BRON") $doel"
     [ -n "$model" ] && cmd="$cmd $(printf '%q' "$model")"
     cmd="$cmd --sessie $(printf '%q' "$sessie")"
     [ "$schoonmaken" = 1 ] && cmd="$cmd --schoon"
@@ -97,6 +99,10 @@ else
         echo "Geen sessie gevonden in $(pwd): $gegevens" >&2; exit 1
     fi
     IFS=$'\t' read -r sid van_model leeftijd regels titel <<< "$gegevens"
+    # Een sessie hervat je alleen in de map waar hij begon: ga daar naartoe als we ergens anders staan.
+    if [ -n "$sessie" ]; then
+        werkmap="$(python3 -I "$SCHOON" --cwd "$sessie" 2>/dev/null)" && [ -d "$werkmap" ] && cd "$werkmap"
+    fi
 
     if [ "$schoonmaken" = 1 ]; then
         uit="$(python3 -I "$SCHOON" --sessie "$sid" --doel "$doel")" || { echo "Schoonmaken mislukt." >&2; exit 1; }

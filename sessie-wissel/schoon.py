@@ -50,9 +50,15 @@ def vind_sessie(sessie, map_):
     if sessie and os.path.isfile(sessie):
         return sessie
     if sessie:
-        pad = os.path.join(map_, sessie if sessie.endswith(".jsonl") else sessie + ".jsonl")
+        naam = sessie if sessie.endswith(".jsonl") else sessie + ".jsonl"
+        pad = os.path.join(map_, naam)
         if os.path.isfile(pad):
             return pad
+        # Niet in de huidige projectmap: in alle projectmappen zoeken (een sessie kan in een andere map begonnen zijn).
+        for d in os.listdir(PROJECTS):
+            kandidaat = os.path.join(PROJECTS, d, naam)
+            if os.path.isfile(kandidaat):
+                return kandidaat
         raise SystemExit("sessie niet gevonden: %s" % sessie)
     kandidaten = [os.path.join(map_, f) for f in os.listdir(map_) if f.endswith(".jsonl")]
     if not kandidaten:
@@ -257,6 +263,25 @@ def info(src):
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
+    if argv and argv[0] == "--cwd":
+        # schoon.py --cwd ID|PAD  ->  de werkmap waarin de sessie begon (uit de regels zelf)
+        src = vind_sessie(argv[1] if len(argv) > 1 else None, projectmap())
+        gevonden = ""
+        with open(src, encoding="utf-8", errors="replace") as f:
+            for regel in f:
+                if '"cwd"' not in regel:
+                    continue
+                try:
+                    c = json.loads(regel).get("cwd")
+                except ValueError:
+                    continue
+                if c and os.path.isdir(c):
+                    gevonden = c
+                    break
+        if not gevonden:
+            raise SystemExit("werkmap van de sessie niet te bepalen")
+        print(gevonden)
+        return 0
     if argv and argv[0] == "--info":
         # schoon.py --info [ID|PAD]  ->  id<TAB>model<TAB>leeftijd_uur<TAB>regels<TAB>titel
         src = vind_sessie(argv[1] if len(argv) > 1 else None, projectmap())
