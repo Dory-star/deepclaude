@@ -16,6 +16,7 @@
 # Opties:
 #   --sessie ID    een bepaalde sessie (geen keuzescherm)
 #   --nieuwste     niet het keuzescherm, maar de nieuwste sessie van de map (de titel staat in de melding)
+#   --venster      open een nieuw Terminal-venster met deze lopende sessie (voor de slash-command /wissel)
 #   --schoon       eerst een opgeschoonde kopie maken (schoon.py) en die hervatten; noodoptie
 #   --geen-fork    hervat dezelfde sessie zonder nieuw id (het origineel wordt dan aangevuld)
 #   --             alles erna gaat ongewijzigd naar claude (bijv. -p "vraag" voor een proef; kiest dan de nieuwste)
@@ -32,7 +33,7 @@ HERE="$(cd "$(dirname "$BRON")" && pwd)"
 SCHOON="$HERE/schoon.py"
 LOG="$HERE/wissels.log"
 
-gebruik() { sed -n '2,26p' "$BRON" | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
+gebruik() { sed -n '2,27p' "$BRON" | sed 's/^# \{0,1\}//' >&2; exit "${1:-2}"; }
 
 doel="${1:-}"
 [ -z "$doel" ] && gebruik 2
@@ -44,17 +45,39 @@ esac
 
 model=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]]; then model="$1"; shift; fi
-sessie=""; fork=1; schoonmaken=0; nieuwste=0; extra=()
+sessie=""; fork=1; schoonmaken=0; nieuwste=0; venster=0; extra=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --sessie)    sessie="${2:-}"; [ -z "$sessie" ] && { echo "--sessie vraagt een id" >&2; exit 2; }; shift 2 ;;
         --nieuwste)  nieuwste=1; shift ;;
+        --venster)   venster=1; shift ;;
         --geen-fork) fork=0; shift ;;
         --schoon)    schoonmaken=1; shift ;;
         --)          shift; extra=("$@"); break ;;
         *)           echo "Onbekende optie: $1" >&2; gebruik 2 ;;
     esac
 done
+
+# --venster: open een NIEUW Terminal-venster dat deze wissel uitvoert. Bedoeld voor de slash-command
+# /wissel binnen een lopende sessie (een lopend proces kan zijn aanbieder niet meer wisselen). Gebruikt
+# het id van de lopende sessie (CLAUDE_CODE_SESSION_ID), dus altijd precies déze sessie.
+if [ "$venster" = 1 ]; then
+    [ -z "$sessie" ] && sessie="${CLAUDE_CODE_SESSION_ID:-}"
+    if [ -z "$sessie" ]; then
+        echo "wissel --venster: geen sessie-id bekend (alleen binnen een Claude-sessie, of geef --sessie)." >&2; exit 1
+    fi
+    cmd="cd $(printf '%q' "$(pwd)") && $(printf '%q' "$BRON") $doel"
+    [ -n "$model" ] && cmd="$cmd $(printf '%q' "$model")"
+    cmd="$cmd --sessie $(printf '%q' "$sessie")"
+    [ "$schoonmaken" = 1 ] && cmd="$cmd --schoon"
+    [ "$fork" = 0 ] && cmd="$cmd --geen-fork"
+    esc="${cmd//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    if [ -n "${WISSEL_DROOG:-}" ]; then echo "droog: $cmd"; exit 0; fi
+    osascript -e 'tell application "Terminal" to activate' -e "tell application \"Terminal\" to do script \"$esc\"" >/dev/null \
+        || { echo "Terminal openen mislukt." >&2; exit 1; }
+    echo "wissel: nieuw venster geopend ($doel${model:+, $model}). Werkt het daar? Sluit dan deze sessie (/exit)." >&2
+    exit 0
+fi
 
 # Headless (-p/--print) heeft geen keuzescherm: dan altijd de nieuwste sessie.
 headless=0

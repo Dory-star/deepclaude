@@ -26,6 +26,12 @@ Anthropic antwoordt dan "issue with the selected model (deepseek-flash[1m])".
 
 `wissel` staat als symlink in `/usr/local/bin/wissel`.
 
+**Vanuit een lopende sessie:** `/wissel byteplus` (slash-command in `~/.claude/commands/wissel.md`, staat
+buiten de repo). Een lopend proces kan zijn aanbieder niet meer wisselen (adres en sleutel liggen bij het
+starten vast; `/model` wisselt alleen binnen dezelfde aanbieder), dus dit opent een **nieuw Terminal-venster**
+met een kopie van precies déze sessie (via `CLAUDE_CODE_SESSION_ID`) en je sluit de oude met `/exit`.
+Technisch: `wissel <doel> --venster`. `WISSEL_DROOG=1` toont alleen het commando.
+
 ## Wat we gemeten hebben (9 nov 2026, Claude Code 2.1.319)
 
 - Een **ruwe hervatting** (zonder iets te filteren) werkt in elke richting: Anthropic, DeepSeek via de
